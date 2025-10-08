@@ -1,4 +1,4 @@
-name: advanced-docker Build & Push Docker image
+name: Build & Push Docker image
 
 on:
   workflow_dispatch:
