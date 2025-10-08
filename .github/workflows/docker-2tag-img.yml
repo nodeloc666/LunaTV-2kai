@@ -1,19 +1,21 @@
-name: Build & Push Docker 2tag  image
+name: advanced-docker Build & Push Docker image
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Docker 镜像的版本标签 (例如: 1.2.3)'
-        required: true
-        # 将默认值改为空，以便更好地区分手动触发和自动触发
-        default: ''
+      commit_sha:
+        description: '要构建的 Commit SHA (可选, 默认为最新代码)'
+        required: false
         type: string
-  push:
-    branches: [ main, master ]
-  # pull_request 触发器通常不用于推送镜像，可以保留或移除
-  pull_request:
-    branches: [ main, master ]
+      version_tag:
+        description: '版本号标签 (可选, 如 v1.0.0)'
+        required: false
+        type: string
+      add_latest_tag:
+        description: "是否标记为 'latest' 标签?"
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,8 +34,7 @@ jobs:
           - platform: linux/amd64
             os: ubuntu-latest
           - platform: linux/arm64
-            # 使用官方支持的 ARM runners
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -41,8 +42,12 @@ jobs:
         run: |
           echo "PLATFORM_NAME=${{ matrix.platform }}" | sed 's|/|-|g' >> $GITHUB_ENV
 
+      # --- 修改部分 1: 根据输入检出指定 commit ---
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          # 如果提供了 commit_sha, 则检出它; 否则检出触发工作流的分支的最新代码
+          ref: ${{ github.event.inputs.commit_sha || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -57,15 +62,24 @@ jobs:
       - name: Set lowercase repository owner
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      # metadata-action 在此场景下主要用于生成 labels，简化 tags 部分
+      
+      # --- 修改部分 2: 动态生成标签 ---
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.lowercase.outputs.owner }}/lunatv
+          tags: |
+            type=raw,value=latest,enable=${{ github.event.inputs.add_latest_tag }}
+            type=raw,value=${{ github.event.inputs.version_tag }},enable=${{ github.event.inputs.version_tag != '' }}
 
-      # build 任务只负责构建并按 digest 推送，不处理最终标签
+      # --- 修改部分 3: 检查是否生成了任何标签 ---
+      - name: Check for generated tags
+        if: steps.meta.outputs.tags == ''
+        run: |
+          echo "::error::No tags were generated. You must provide a version tag and/or set 'add_latest_tag' to true."
+          exit 1
+          
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v5
@@ -74,17 +88,15 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # 关键：这里不再需要 tags 参数，因为我们按 digest 推送
-          outputs: type=image,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=ghcr.io/${{ steps.lowercase.outputs.owner }}/lunatv,name-canonical=true,push=true
+          no-cache: true
+          pull: true
 
-      # Export 和 Upload 步骤保持不变
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
-          echo "Digest for ${{ matrix.platform }} is ${digest}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
@@ -99,8 +111,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
-    # 只在 push 到主分支或手动触发时运行 merge 任务
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -123,43 +133,26 @@ jobs:
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      # --- [这是核心修改部分] ---
-      - name: Prepare tags for manifest
-        id: manifest_tags
-        # bash -eo pipefail: 更安全的脚本执行模式
-        run: |
-          IMAGE_NAME="ghcr.io/${{ steps.lowercase.outputs.owner }}/lunatv"
-          
-          # 确定基础标签
-          # 如果是手动触发 (workflow_dispatch) 并且用户输入了 tag，就用它
-          # 否则 (例如 push 触发)，就默认为 'latest'
-          BASE_TAG="${{ github.event.inputs.tag || 'latest' }}"
-          echo "Base tag is: ${BASE_TAG}"
-          
-          # 开始构建标签参数列表
-          TAG_ARGS="-t ${IMAGE_NAME}:${BASE_TAG}"
-          
-          # 如果基础标签不是 'latest'，就额外添加一个 'latest' 标签
-          if [ "${BASE_TAG}" != "latest" ]; then
-            echo "Adding 'latest' tag as well."
-            TAG_ARGS="$TAG_ARGS -t ${IMAGE_NAME}:latest"
-          fi
-          
-          # 将最终的参数字符串设置为输出
-          echo "Final tag arguments: ${TAG_ARGS}"
-          echo "tags=${TAG_ARGS}" >> $GITHUB_OUTPUT
-
+      # --- 修改部分 4: 在 merge job 中保持标签逻辑一致 ---
+      - name: Extract metadata for merge
+        id: meta_merge
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.lowercase.outputs.owner }}/lunatv
+          tags: |
+            type=raw,value=latest,enable=${{ github.event.inputs.add_latest_tag }}
+            type=raw,value=${{ github.event.inputs.version_tag }},enable=${{ github.event.inputs.version_tag != '' }}
+      
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          # 检查是否有下载的 digest 文件
-          if [ -z "$(ls -A .)" ]; then
-            echo "No digests found to create manifest. Exiting."
+          TAG_ARGS=$(echo "${{ steps.meta_merge.outputs.tags }}" | xargs -I {} printf -- "-t {} ")
+          if [ -z "$TAG_ARGS" ]; then
+            echo "::error::No tags were generated for the manifest list. This should not happen if the build jobs succeeded."
             exit 1
           fi
-
-          echo "Creating manifest with tags: ${{ steps.manifest_tags.outputs.tags }}"
-          docker buildx imagetools create ${{ steps.manifest_tags.outputs.tags }} \
+          
+          docker buildx imagetools create ${TAG_ARGS} \
             $(printf 'ghcr.io/${{ steps.lowercase.outputs.owner }}/lunatv@sha256:%s ' *)
 
   cleanup-refresh:
