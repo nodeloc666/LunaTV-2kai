@@ -240,12 +240,18 @@ async function getInitConfig(configFile: string, subConfig: {
       DoubanImageProxy: process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY || '',
       BangumiApiType: process.env.NEXT_PUBLIC_BANGUMI_API_TYPE || 'server',
       BangumiApiProxy: process.env.NEXT_PUBLIC_BANGUMI_API_PROXY || '',
+      BangumiImageProxyType: process.env.NEXT_PUBLIC_BANGUMI_IMAGE_PROXY_TYPE || 'server',
+      BangumiImageProxy: process.env.NEXT_PUBLIC_BANGUMI_IMAGE_PROXY || '',
       DisableYellowFilter:
         process.env.NEXT_PUBLIC_DISABLE_YELLOW_FILTER === 'true',
       ShowAdultContent: false, // 默认不显示成人内容，可在管理面板修改
       FluidSearch:
         process.env.NEXT_PUBLIC_FLUID_SEARCH !== 'false',
       EnableWebLive: false,
+      // 修改点：新增站点级浏览器原生跳转默认值，未手动设置本地偏好时以此为准
+      PreferBrowserNavigation: false,
+      // 修改点：新增站点级长按倍速默认值，未手动设置前台偏好时以此为准
+      DefaultLockedLongPressRate: 2,
       // TMDB配置默认值
       TMDBApiKey: process.env.TMDB_API_KEY || '',
       TMDBLanguage: 'zh-CN',
@@ -485,7 +491,7 @@ export async function configSelfCheck(adminConfig: AdminConfig): Promise<AdminCo
   // 确保短剧配置有默认值
   if (!adminConfig.ShortDramaConfig) {
     adminConfig.ShortDramaConfig = {
-      primaryApiUrl: 'https://wwzy.tv/api.php/provide/vod',  // 默认主API
+      primaryApiUrl: 'https://tyyszyapi.com/api.php/provide/vod',  // 默认主API
       alternativeApiUrl: '',                            // 默认为空，需要管理员配置
       enableAlternative: false,                         // 默认关闭备用API
     };

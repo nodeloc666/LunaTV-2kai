@@ -23,7 +23,6 @@ import { GlobalCacheProvider } from '../contexts/GlobalCacheContext';
 import { DownloadPanel } from '../components/download/DownloadPanel';
 import ChatFloatingWindow from '../components/watch-room/ChatFloatingWindow';
 import QueryProvider from '../components/QueryProvider';
-import { CinematicLoadingFallback } from '../components/CinematicLoadingFallback';
 import RouteWarmup from '../components/RouteWarmup';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -76,9 +75,12 @@ export default async function RootLayout({
     process.env.NEXT_PUBLIC_DISABLE_YELLOW_FILTER === 'true';
   let fluidSearch = process.env.NEXT_PUBLIC_FLUID_SEARCH !== 'false';
   let enableWebLive = false;
+  let preferBrowserNavigation = false;
   let customAdFilterVersion = 0;
   let aiRecommendEnabled = false;
   let embyEnabled = false;
+  let defaultLockedLongPressRate = 2;
+  let navMenuHiddenItems: string[] = [];
   let customCategories = [] as {
     name: string;
     type: 'movie' | 'tv';
@@ -103,6 +105,12 @@ export default async function RootLayout({
     }));
     fluidSearch = config.SiteConfig.FluidSearch;
     enableWebLive = config.SiteConfig.EnableWebLive ?? false;
+    // 修改点：将后台站点配置中的浏览器原生跳转默认值注入前端运行时配置
+    preferBrowserNavigation = config.SiteConfig.PreferBrowserNavigation ?? false;
+    // 修改点：将后台站点配置中的长按倍速默认值提前缓存，避免运行时配置引用局部变量报错
+    defaultLockedLongPressRate = config.SiteConfig.DefaultLockedLongPressRate ?? 2;
+    // 修改点：将后台配置的顶部固定菜单隐藏列表注入前台，供导航栏过滤菜单项
+    navMenuHiddenItems = config.SiteConfig.NavMenuHiddenItems ?? [];
     customAdFilterVersion = config.SiteConfig?.CustomAdFilterVersion || 0;
     aiRecommendEnabled = config.AIRecommendConfig?.enabled ?? false;
     // 检查是否启用了 Emby 功能（支持多源）
@@ -120,10 +128,17 @@ export default async function RootLayout({
     DOUBAN_PROXY: doubanProxy,
     DOUBAN_IMAGE_PROXY_TYPE: doubanImageProxyType,
     DOUBAN_IMAGE_PROXY: doubanImageProxy,
+    BANGUMI_IMAGE_PROXY_TYPE: process.env.NEXT_PUBLIC_BANGUMI_IMAGE_PROXY_TYPE || 'server',
+    BANGUMI_IMAGE_PROXY: process.env.NEXT_PUBLIC_BANGUMI_IMAGE_PROXY || '',
     DISABLE_YELLOW_FILTER: disableYellowFilter,
     CUSTOM_CATEGORIES: customCategories,
     FLUID_SEARCH: fluidSearch,
     ENABLE_WEB_LIVE: enableWebLive,
+    // 修改点：向前台注入后台配置的顶部固定菜单隐藏列表
+    NAV_MENU_HIDDEN_ITEMS: navMenuHiddenItems,
+    PREFER_BROWSER_NAVIGATION: preferBrowserNavigation,
+    // 修改点：向前台注入站点级长按倍速默认值，供未手动设置的用户继承
+    DEFAULT_LOCKED_LONG_PRESS_RATE: defaultLockedLongPressRate,
     CUSTOM_AD_FILTER_VERSION: customAdFilterVersion,
     AI_RECOMMEND_ENABLED: aiRecommendEnabled,
     EMBY_ENABLED: embyEnabled,
@@ -174,11 +189,8 @@ export default async function RootLayout({
                     {/* 主内容区域 - 只有这部分会在路由切换时重新渲染 */}
                     <main className='w-full min-h-screen pt-[44px] md:pt-16 pb-16 md:pb-8'>
                       <div className='w-full max-w-[2560px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 2xl:px-20'>
-                        <Suspense fallback={
-                          <div className="fixed inset-0 z-50">
-                            <CinematicLoadingFallback />
-                          </div>
-                        }>
+                        {/* 修改点：全站不再展示 cinematic loading 页面，保留 Suspense 边界但回退改为空 */}
+                        <Suspense fallback={null}>
                           {children}
                         </Suspense>
                       </div>

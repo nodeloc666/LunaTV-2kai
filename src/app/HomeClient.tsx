@@ -3,7 +3,6 @@
 'use client';
 
 import { ChevronRight, Film, Tv, Calendar, Sparkles, Play, Trash2 } from 'lucide-react';
-import Link from 'next/link';
 import { Suspense, useEffect, useState, useRef, useMemo, useReducer, useTransition } from 'react';
 import { useQuery, queryOptions } from '@tanstack/react-query';
 
@@ -19,7 +18,6 @@ import { useTMDBLogos } from '@/hooks/useTMDBLogo';
 import { getDoubanDetails } from '@/lib/douban.client';
 import { DoubanItem } from '@/lib/types';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
-import { CinematicLoadingFallback } from '@/components/CinematicLoadingFallback';
 import { useFavoritesQuery } from '@/hooks/useFavoritesQuery';
 import { usePlayRecordsQuery } from '@/hooks/usePlayRecordsQuery';
 import { useRemindersQuery } from '@/hooks/useRemindersQuery';
@@ -37,6 +35,7 @@ import { useSite } from '@/components/SiteProvider';
 import { TelegramWelcomeModal } from '@/components/TelegramWelcomeModal';
 import VideoCard from '@/components/VideoCard';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { FastLink } from '@/components/FastLink';
 
 // 🎯 优化：合并状态管理 - 使用 useReducer 减少重渲染
 interface HomeState {
@@ -807,19 +806,8 @@ function HomeClient({ initialConfig }: {
     localStorage.setItem('hasSeenAnnouncement', announcement); // 记录已查看弹窗
   };
 
-  // 🔥 Show cinematic loading screen while data is being fetched
-  // This ensures users see the beautiful loading animation instead of skeleton screens
-  // 🔥 Use overlay instead of unmounting to prevent component remount issues
-  const showCinematicLoading = loading;
-
   return (
     <PageLayout>
-      {/* 🔥 Cinematic loading overlay - doesn't unmount content */}
-      {showCinematicLoading && (
-        <div className="fixed inset-0 z-50">
-          <CinematicLoadingFallback />
-        </div>
-      )}
 
       {/* Telegram 新用户欢迎弹窗 */}
       <TelegramWelcomeModal />
@@ -1329,13 +1317,13 @@ function HomeClient({ initialConfig }: {
                 <section className='mb-8'>
                   <div className='mb-4 flex items-center justify-between'>
                     <SectionTitle title="即将上映" icon={Calendar} iconColor="text-orange-500" />
-                    <Link
+                    <FastLink
                       href='/release-calendar'
                       className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                     >
                       查看更多
                       <ChevronRight className='w-4 h-4 ml-1' />
-                    </Link>
+                    </FastLink>
                   </div>
 
                   {/* Tab 切换 */}
@@ -1427,13 +1415,13 @@ function HomeClient({ initialConfig }: {
               <section className='mb-8'>
                 <div className='mb-4 flex items-center justify-between'>
                   <SectionTitle title="热门电影" icon={Film} iconColor="text-red-500" />
-                  <Link
+                  <FastLink
                     href='/douban?type=movie'
                     className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                   >
                     查看更多
                     <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
+                  </FastLink>
                 </div>
                 <ScrollableRow enableVirtualization={true}>
                   {loading
@@ -1470,13 +1458,13 @@ function HomeClient({ initialConfig }: {
               <section className='mb-8'>
                 <div className='mb-4 flex items-center justify-between'>
                   <SectionTitle title="热门剧集" icon={Tv} iconColor="text-blue-500" />
-                  <Link
+                  <FastLink
                     href='/douban?type=tv'
                     className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                   >
                     查看更多
                     <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
+                  </FastLink>
                 </div>
                 <ScrollableRow enableVirtualization={true}>
                   {loading
@@ -1513,13 +1501,13 @@ function HomeClient({ initialConfig }: {
               <section className='mb-8'>
                 <div className='mb-4 flex items-center justify-between'>
                   <SectionTitle title="新番放送" icon={Calendar} iconColor="text-purple-500" />
-                  <Link
+                  <FastLink
                     href='/douban?type=anime'
                     className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                   >
                     查看更多
                     <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
+                  </FastLink>
                 </div>
                 <ScrollableRow enableVirtualization={true}>
                   {loading
@@ -1563,13 +1551,13 @@ function HomeClient({ initialConfig }: {
               <section className='mb-8'>
                 <div className='mb-4 flex items-center justify-between'>
                   <SectionTitle title="热门综艺" icon={Sparkles} iconColor="text-pink-500" />
-                  <Link
+                  <FastLink
                     href='/douban?type=show'
                     className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                   >
                     查看更多
                     <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
+                  </FastLink>
                 </div>
                 <ScrollableRow enableVirtualization={true}>
                   {loading
@@ -1606,13 +1594,13 @@ function HomeClient({ initialConfig }: {
               <section className='mb-8'>
                 <div className='mb-4 flex items-center justify-between'>
                   <SectionTitle title="热门短剧" icon={Play} iconColor="text-orange-500" />
-                  <Link
+                  <FastLink
                     href='/shortdrama'
                     className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
                   >
                     查看更多
                     <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
+                  </FastLink>
                 </div>
                 <ScrollableRow enableVirtualization={true}>
                   {loading

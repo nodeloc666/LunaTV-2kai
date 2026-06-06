@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom';
 
 import { UserEmbyConfig } from './UserEmbyConfig';
 import { useEmbyConfigQuery } from '@/hooks/useUserMenuQueries';
+import { BROWSER_NAVIGATION_PREFERENCE_KEY } from '@/lib/browser-navigation';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -24,6 +25,19 @@ function readLS<T>(key: string, fallback: T): T {
   const v = localStorage.getItem(key);
   if (v === null) return fallback;
   try { return JSON.parse(v) as T; } catch { return v as unknown as T; }
+}
+
+const LOCKED_LONG_PRESS_RATE_KEY = 'moontv_locked_long_press_rate';
+const DEFAULT_LOCKED_LONG_PRESS_RATE = 2;
+const PLAYBACK_RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
+
+function sanitizeLongPressRate(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_LOCKED_LONG_PRESS_RATE;
+  }
+  return (PLAYBACK_RATE_OPTIONS as readonly number[]).includes(value)
+    ? value
+    : DEFAULT_LOCKED_LONG_PRESS_RATE;
 }
 
 const doubanDataSourceOptions = [
@@ -39,6 +53,13 @@ const bangumiApiTypeOptions = [
   { value: 'server', label: '服务端转发（默认，访问官方 api.bgm.tv）' },
   { value: 'cmliussss', label: 'Bangumi 反代 By CMLiussss（解决服务器被墙）' },
   { value: 'custom', label: '自定义反代地址' },
+];
+
+const bangumiImageProxyTypeOptions = [
+  { value: 'server', label: '服务器代理（默认，由服务器代理请求）' },
+  { value: 'cmliussss', label: 'Bangumi 图片 CDN By CMLiussss' },
+  { value: 'direct', label: '直连（浏览器直接请求 lain.bgm.tv）' },
+  { value: 'custom', label: '自定义代理' },
 ];
 
 const doubanImageProxyTypeOptions = [
@@ -95,16 +116,19 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
   const [continueWatchingMinProgress, setContinueWatchingMinProgress] = useState(5);
   const [continueWatchingMaxProgress, setContinueWatchingMaxProgress] = useState(100);
   const [enableContinueWatchingFilter, setEnableContinueWatchingFilter] = useState(false);
-  const [enableAutoSkip, setEnableAutoSkip] = useState(true);
-  const [enableAutoNextEpisode, setEnableAutoNextEpisode] = useState(true);
   const [requireClearConfirmation, setRequireClearConfirmation] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'TS' | 'MP4'>('TS');
+  const [preferLocationAssignNavigation, setPreferLocationAssignNavigation] = useState(false);
+  const [lockedLongPressRate, setLockedLongPressRate] = useState(DEFAULT_LOCKED_LONG_PRESS_RATE);
   const [exactSearch, setExactSearch] = useState(true);
   const [isDoubanDropdownOpen, setIsDoubanDropdownOpen] = useState(false);
   const [isDoubanImageProxyDropdownOpen, setIsDoubanImageProxyDropdownOpen] = useState(false);
   const [isBangumiApiDropdownOpen, setIsBangumiApiDropdownOpen] = useState(false);
+  const [isBangumiImageProxyDropdownOpen, setIsBangumiImageProxyDropdownOpen] = useState(false);
   const [bangumiApiType, setBangumiApiType] = useState('server');
   const [bangumiApiProxy, setBangumiApiProxy] = useState('');
+  const [bangumiImageProxyType, setBangumiImageProxyType] = useState('server');
+  const [bangumiImageProxyUrl, setBangumiImageProxyUrl] = useState('');
 
   // ── Emby config via TanStack Query ────────────────────────────────────────
   const { data: embyConfig = { sources: [] } } = useEmbyConfigQuery(isOpen);
@@ -124,14 +148,26 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
     setDoubanImageProxyUrl(readLS('doubanImageProxyUrl', RC.DOUBAN_IMAGE_PROXY || ''));
     setBangumiApiType(localStorage.getItem('bangumiApiType') ?? 'server');
     setBangumiApiProxy(readLS('bangumiApiProxy', ''));
+    setBangumiImageProxyType(localStorage.getItem('bangumiImageProxyType') ?? RC.BANGUMI_IMAGE_PROXY_TYPE ?? 'server');
+    setBangumiImageProxyUrl(readLS('bangumiImageProxyUrl', RC.BANGUMI_IMAGE_PROXY || ''));
     setContinueWatchingMinProgress(readLS('continueWatchingMinProgress', 5));
     setContinueWatchingMaxProgress(readLS('continueWatchingMaxProgress', 100));
     setEnableContinueWatchingFilter(readLS('enableContinueWatchingFilter', false));
-    setEnableAutoSkip(readLS('enableAutoSkip', true));
-    setEnableAutoNextEpisode(readLS('enableAutoNextEpisode', true));
     setRequireClearConfirmation(readLS('requireClearConfirmation', false));
+    // 修改点：新增浏览器直跳本地开关，供常用站内链接按需切换为 window.location.assign
+    setPreferLocationAssignNavigation(
+      readLS(BROWSER_NAVIGATION_PREFERENCE_KEY, RC.PREFER_BROWSER_NAVIGATION === true)
+    );
     const fmt = localStorage.getItem('downloadFormat');
     if (fmt === 'TS' || fmt === 'MP4') setDownloadFormat(fmt);
+    // 修改点：长按倍速默认值改为优先读取本地设置，无本地设置时继承后台站点配置
+    const runtimeLockedLongPressRate = sanitizeLongPressRate(Number(RC.DEFAULT_LOCKED_LONG_PRESS_RATE));
+    const storedLockedLongPressRate = localStorage.getItem(LOCKED_LONG_PRESS_RATE_KEY);
+    setLockedLongPressRate(
+      storedLockedLongPressRate === null
+        ? runtimeLockedLongPressRate
+        : sanitizeLongPressRate(Number(storedLockedLongPressRate))
+    );
     const es = localStorage.getItem('exactSearch');
     if (es !== null) setExactSearch(es === 'true');
     setPlayerBufferMode(readLS('playerBufferMode', 'standard'));
@@ -149,6 +185,10 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
   const handleFluidSearchToggle = set(setFluidSearch, 'fluidSearch');
   const handleLiveDirectConnectToggle = set(setLiveDirectConnect, 'liveDirectConnect');
   const handleRequireClearConfirmationToggle = set(setRequireClearConfirmation, 'requireClearConfirmation');
+  const handlePreferLocationAssignNavigationToggle = set(
+    setPreferLocationAssignNavigation,
+    BROWSER_NAVIGATION_PREFERENCE_KEY,
+  );
   const handleDownloadFormatChange = set<'TS' | 'MP4'>(setDownloadFormat, 'downloadFormat', false);
   const handleExactSearchToggle = (v: boolean) => { setExactSearch(v); localStorage.setItem('exactSearch', String(v)); };
   const handleDoubanProxyUrlChange = (v: string) => { setDoubanProxyUrl(v); localStorage.setItem('doubanProxyUrl', v); };
@@ -157,22 +197,17 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
   const handleDoubanImageProxyUrlChange = (v: string) => { setDoubanImageProxyUrl(v); localStorage.setItem('doubanImageProxyUrl', v); };
   const handleBangumiApiTypeChange = (v: string) => { setBangumiApiType(v); localStorage.setItem('bangumiApiType', v); };
   const handleBangumiApiProxyChange = (v: string) => { setBangumiApiProxy(v); localStorage.setItem('bangumiApiProxy', v); };
+  const handleBangumiImageProxyTypeChange = (v: string) => { setBangumiImageProxyType(v); localStorage.setItem('bangumiImageProxyType', v); };
+  const handleBangumiImageProxyUrlChange = (v: string) => { setBangumiImageProxyUrl(v); localStorage.setItem('bangumiImageProxyUrl', v); };
   const handleBufferModeChange = (v: 'standard' | 'enhanced' | 'max') => { setPlayerBufferMode(v); localStorage.setItem('playerBufferMode', v); };
+  const handleLockedLongPressRateChange = (v: number) => {
+    const nextRate = sanitizeLongPressRate(v);
+    setLockedLongPressRate(nextRate);
+    localStorage.setItem(LOCKED_LONG_PRESS_RATE_KEY, String(nextRate));
+  };
   const handleContinueWatchingMinProgressChange = (v: number) => { setContinueWatchingMinProgress(v); localStorage.setItem('continueWatchingMinProgress', v.toString()); };
   const handleContinueWatchingMaxProgressChange = (v: number) => { setContinueWatchingMaxProgress(v); localStorage.setItem('continueWatchingMaxProgress', v.toString()); };
   const handleEnableContinueWatchingFilterToggle = set(setEnableContinueWatchingFilter, 'enableContinueWatchingFilter');
-
-  const handleEnableAutoSkipToggle = (v: boolean) => {
-    setEnableAutoSkip(v);
-    localStorage.setItem('enableAutoSkip', JSON.stringify(v));
-    window.dispatchEvent(new Event('localStorageChanged'));
-  };
-
-  const handleEnableAutoNextEpisodeToggle = (v: boolean) => {
-    setEnableAutoNextEpisode(v);
-    localStorage.setItem('enableAutoNextEpisode', JSON.stringify(v));
-    window.dispatchEvent(new Event('localStorageChanged'));
-  };
 
   const handleResetSettings = () => {
     const RC = (window as any).RUNTIME_CONFIG || {};
@@ -181,6 +216,9 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
     const defaultDoubanImageProxyType = RC.DOUBAN_IMAGE_PROXY_TYPE || 'server';
     const defaultDoubanImageProxyUrl = RC.DOUBAN_IMAGE_PROXY || '';
     const defaultFluidSearch = RC.FLUID_SEARCH !== false;
+    const defaultPreferBrowserNavigation = RC.PREFER_BROWSER_NAVIGATION === true;
+    // 修改点：恢复默认时跟随后台站点配置的长按倍速默认值，而不是固定写死
+    const defaultLockedLongPressRate = sanitizeLongPressRate(Number(RC.DEFAULT_LOCKED_LONG_PRESS_RATE));
 
     setDefaultAggregateSearch(true);
     setEnableOptimization(false);
@@ -192,13 +230,15 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
     setDoubanImageProxyUrl(defaultDoubanImageProxyUrl);
     setBangumiApiType(RC.BANGUMI_API_TYPE || 'server');
     setBangumiApiProxy(RC.BANGUMI_API_PROXY || '');
+    setBangumiImageProxyType(RC.BANGUMI_IMAGE_PROXY_TYPE || 'server');
+    setBangumiImageProxyUrl(RC.BANGUMI_IMAGE_PROXY || '');
     setContinueWatchingMinProgress(5);
     setContinueWatchingMaxProgress(100);
     setEnableContinueWatchingFilter(false);
-    setEnableAutoSkip(true);
-    setEnableAutoNextEpisode(true);
     setPlayerBufferMode('standard');
     setDownloadFormat('TS');
+    setLockedLongPressRate(defaultLockedLongPressRate);
+    setPreferLocationAssignNavigation(defaultPreferBrowserNavigation);
 
     localStorage.setItem('defaultAggregateSearch', JSON.stringify(true));
     localStorage.setItem('enableOptimization', JSON.stringify(false));
@@ -210,14 +250,17 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
     localStorage.setItem('doubanImageProxyUrl', defaultDoubanImageProxyUrl);
     localStorage.setItem('bangumiApiType', RC.BANGUMI_API_TYPE || 'server');
     localStorage.setItem('bangumiApiProxy', RC.BANGUMI_API_PROXY || '');
+    localStorage.setItem('bangumiImageProxyType', RC.BANGUMI_IMAGE_PROXY_TYPE || 'server');
+    localStorage.setItem('bangumiImageProxyUrl', RC.BANGUMI_IMAGE_PROXY || '');
     localStorage.setItem('continueWatchingMinProgress', '5');
     localStorage.setItem('continueWatchingMaxProgress', '100');
     localStorage.setItem('enableContinueWatchingFilter', JSON.stringify(false));
-    localStorage.setItem('enableAutoSkip', JSON.stringify(true));
-    localStorage.setItem('enableAutoNextEpisode', JSON.stringify(true));
     localStorage.setItem('requireClearConfirmation', JSON.stringify(false));
+    // 修改点：恢复默认时跟随后台站点配置的浏览器直跳默认值，而不是固定关闭
+    localStorage.setItem(BROWSER_NAVIGATION_PREFERENCE_KEY, JSON.stringify(defaultPreferBrowserNavigation));
     localStorage.setItem('playerBufferMode', 'standard');
     localStorage.setItem('downloadFormat', 'TS');
+    localStorage.setItem(LOCKED_LONG_PRESS_RATE_KEY, String(defaultLockedLongPressRate));
   };
 
   if (!isOpen) return null;
@@ -470,6 +513,71 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
 
             <div className='border-t border-gray-200 dark:border-gray-700'></div>
 
+            {/* Bangumi 图片代理 */}
+            <div className='space-y-3'>
+              <div>
+                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>Bangumi 图片代理</h4>
+                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>选择获取 Bangumi 封面图片的方式</p>
+              </div>
+              <div className='relative' data-dropdown='bangumi-image-proxy'>
+                <button
+                  type='button'
+                  onClick={() => setIsBangumiImageProxyDropdownOpen(!isBangumiImageProxyDropdownOpen)}
+                  className='w-full px-3 py-2.5 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all duration-200 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm hover:border-gray-400 dark:hover:border-gray-500 text-left'
+                >
+                  {bangumiImageProxyTypeOptions.find(o => o.value === bangumiImageProxyType)?.label}
+                </button>
+                <div className='absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none'>
+                  <ChevronDown className={`w-4 h-4 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isBangumiImageProxyDropdownOpen ? 'rotate-180' : ''}`} />
+                </div>
+                {isBangumiImageProxyDropdownOpen && (
+                  <div className='absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg max-h-60 overflow-auto'>
+                    {bangumiImageProxyTypeOptions.map(option => (
+                      <button
+                        key={option.value}
+                        type='button'
+                        onClick={() => { handleBangumiImageProxyTypeChange(option.value); setIsBangumiImageProxyDropdownOpen(false); }}
+                        className={`w-full px-3 py-2.5 text-left text-sm transition-colors duration-150 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 ${bangumiImageProxyType === option.value ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-gray-100'}`}
+                      >
+                        <span className='truncate'>{option.label}</span>
+                        {bangumiImageProxyType === option.value && <Check className='w-4 h-4 text-green-600 dark:text-green-400 shrink-0 ml-2' />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {bangumiImageProxyType === 'cmliussss' && (
+                <div className='mt-3'>
+                  <button
+                    type='button'
+                    onClick={() => window.open('https://github.com/cmliu', '_blank')}
+                    className='flex items-center justify-center gap-1.5 w-full px-3 text-xs text-gray-500 dark:text-gray-400 cursor-pointer'
+                  >
+                    <span className='font-medium'>Thanks to @CMLiussss</span>
+                    <ExternalLink className='w-3.5 opacity-70' />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {bangumiImageProxyType === 'custom' && (
+              <div className='space-y-3'>
+                <div>
+                  <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>Bangumi 图片代理地址</h4>
+                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>自定义图片代理地址，图片 URL 将以编码形式拼接在后面</p>
+                </div>
+                <input
+                  type='text'
+                  className='w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all duration-200 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 shadow-sm hover:border-gray-400 dark:hover:border-gray-500'
+                  placeholder='例如: https://proxy.example.com/fetch?url='
+                  value={bangumiImageProxyUrl}
+                  onChange={e => handleBangumiImageProxyUrlChange(e.target.value)}
+                />
+              </div>
+            )}
+
+            <div className='border-t border-gray-200 dark:border-gray-700'></div>
+
             {/* 开关设置 */}
             <div className='flex items-center justify-between'>
               <div>
@@ -509,6 +617,42 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
                 <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>开启 IPTV 视频浏览器直连时，需要自备 Allow CORS 插件</p>
               </div>
               <Toggle checked={liveDirectConnect} onChange={handleLiveDirectConnectToggle} />
+            </div>
+
+            <div className='flex items-center justify-between'>
+              <div>
+                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>优先使用浏览器原生跳转</h4>
+                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>修改点：开启后，常用站内页面入口会优先使用 window.location.assign 进行整页跳转</p>
+              </div>
+              <Toggle checked={preferLocationAssignNavigation} onChange={handlePreferLocationAssignNavigationToggle} />
+            </div>
+
+            <div className='border-t border-gray-200 dark:border-gray-700'></div>
+
+            <div className='space-y-3'>
+              <div>
+                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>长按倍速</h4>
+                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>用于右方向键长按和手机端长按屏幕，默认 2x</p>
+              </div>
+              <div className='grid grid-cols-4 sm:grid-cols-7 gap-2'>
+                {PLAYBACK_RATE_OPTIONS.map(rate => {
+                  const isSelected = lockedLongPressRate === rate;
+                  return (
+                    <button
+                      key={rate}
+                      type='button'
+                      onClick={() => handleLockedLongPressRateChange(rate)}
+                      className={`px-2 py-2 rounded-lg border text-sm font-medium transition-all duration-200 ${
+                        isSelected
+                          ? 'border-green-500 bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300'
+                          : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      {rate}x
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className='border-t border-gray-200 dark:border-gray-700'></div>
@@ -568,38 +712,6 @@ export const SettingsPanel = memo(({ isOpen, onClose }: SettingsPanelProps) => {
             </div>
 
             <div className='border-t border-gray-200 dark:border-gray-700'></div>
-
-            {/* 跳过片头片尾 */}
-            <div className='space-y-4'>
-              <div>
-                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>跳过片头片尾设置</h4>
-                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>控制播放器默认的片头片尾跳过行为</p>
-              </div>
-              <div className='flex items-center justify-between'>
-                <div>
-                  <h5 className='text-sm font-medium text-gray-700 dark:text-gray-300'>启用自动跳过</h5>
-                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>开启后将自动跳过片头片尾，关闭则显示手动跳过按钮</p>
-                </div>
-                <Toggle checked={enableAutoSkip} onChange={handleEnableAutoSkipToggle} />
-              </div>
-              <div className='flex items-center justify-between'>
-                <div>
-                  <h5 className='text-sm font-medium text-gray-700 dark:text-gray-300'>片尾自动播放下一集</h5>
-                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>开启后片尾结束时自动跳转到下一集</p>
-                </div>
-                <Toggle checked={enableAutoNextEpisode} onChange={handleEnableAutoNextEpisodeToggle} />
-              </div>
-              <div className='flex items-center justify-between'>
-                <div>
-                  <h5 className='text-sm font-medium text-gray-700 dark:text-gray-300'>清空记录确认提示</h5>
-                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>开启后点击清空按钮时会弹出确认对话框，防止误操作</p>
-                </div>
-                <Toggle checked={requireClearConfirmation} onChange={handleRequireClearConfirmationToggle} />
-              </div>
-              <div className='text-xs text-gray-500 dark:text-gray-400 bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800'>
-                💡 这些设置会作为新视频的默认配置。对于已配置的视频，请在播放页面的"跳过设置"中单独调整。
-              </div>
-            </div>
 
             <div className='border-t border-gray-200 dark:border-gray-700'></div>
 

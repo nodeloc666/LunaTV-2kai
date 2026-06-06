@@ -18,6 +18,10 @@ export interface AdminConfig {
     ShowAdultContent: boolean; // 是否显示成人内容，默认 false
     FluidSearch: boolean;
     EnableWebLive: boolean;
+    PreferBrowserNavigation?: boolean;
+    DefaultLockedLongPressRate?: number;
+    // 修改点：后台分类配置页使用该字段控制顶部固定菜单是否隐藏
+    NavMenuHiddenItems?: Array<'source-browser' | 'movie' | 'tv' | 'shortdrama' | 'anime' | 'show'>;
     // TMDB配置
     TMDBApiKey?: string;
     TMDBLanguage?: string;
@@ -25,6 +29,9 @@ export interface AdminConfig {
     // Bangumi API 代理
     BangumiApiType?: string;
     BangumiApiProxy?: string;
+    // Bangumi 图片代理
+    BangumiImageProxyType?: string;
+    BangumiImageProxy?: string;
     // 自定义去广告代码
     CustomAdFilterCode?: string;
     CustomAdFilterVersion?: number;

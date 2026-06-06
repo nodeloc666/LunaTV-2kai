@@ -57,10 +57,9 @@
 ### 🎬 播放器增强
 - **TMDB Hero Banner**：播放页以 TMDB backdrop 为主视觉，展示 logo、海报、评分、简介，支持多季徽章
 - **剧集选择器增强**：手动速度测试功能，实时显示源状态徽章（可用/不可用/测试中）
-- **控制栏透明度控制**：可自定义控制栏遮挡度（10-80%），实时调整透明度和模糊效果，改善字幕可见性
-- **快进快退按钮**：可自定义时间间隔的快进快退按钮，Netflix 风格设计，响应式布局
+- **控制栏透明度控制**：可自定义控制栏背景遮挡度（10-80%），保持纯透明毛玻璃底层，改善字幕可见性
 - **超宽显示器适配**：视频显示模式控制，完美支持超宽显示器
-- **片头片尾跳过预设**：灵活的片头片尾模板系统，支持导入导出和验证
+- **片头片尾跳过**：支持在播放页菜单中单独设置片头、片尾并自动跳过
 - **播放速率持久化**：记住播放速率设置，跨会话保持
 - **多音轨支持**：Emby 播放自动选择浏览器兼容音轨，支持音轨切换
 
@@ -153,7 +152,6 @@ pnpm dev
 ### 高级配置
 - 🔧 [代理配置](docs/advanced/PROXY_CONFIG.md)
 - 🚫 [广告过滤](docs/advanced/CUSTOM_AD_FILTER.md)
-- ⏭️ [跳过控制器](docs/advanced/SKIP_CONTROLLER_GUIDE.md)
 
 ## 🔧 技术栈
 
@@ -193,7 +191,8 @@ pnpm dev
 
 ### 原始项目
 - [MoonTV](https://github.com/MoonTechLab/LunaTV) — 项目原始版本
-- [Selene](https://github.com/MoonTechLab/Selene) — 官方移动端 APP
+- [Selene](https://github.com/MoonTechLab/Selene) — 官方移动端 APP（iOS / Android 手机）
+- [Selene-TV](https://github.com/MoonTechLab/Selene-TV) — 官方 Android TV 客户端，针对遥控器设备优化
 - [LibreTV](https://github.com/LibreSpark/LibreTV) — 灵感来源
 
 ### 核心依赖

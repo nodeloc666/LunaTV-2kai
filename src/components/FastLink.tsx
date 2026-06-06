@@ -2,7 +2,17 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { startTransition, type MouseEvent, type ReactNode } from 'react';
+import {
+  startTransition,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
+
+import {
+  isExternalNavigationHref,
+  shouldUseBrowserAssignNavigation,
+} from '@/lib/browser-navigation';
 
 interface FastLinkProps {
   href: string;
@@ -34,6 +44,10 @@ interface FastLinkProps {
    * Rel attribute for security when using target="_blank"
    */
   rel?: string;
+  /**
+   * Inline style passthrough
+   */
+  style?: CSSProperties;
 }
 
 /**
@@ -54,6 +68,7 @@ export function FastLink({
   'aria-label': ariaLabel,
   target,
   rel,
+  style,
 }: FastLinkProps) {
   const router = useRouter();
 
@@ -72,15 +87,22 @@ export function FastLink({
     }
 
     // External links - let browser handle naturally
-    if (href.startsWith('http://') || href.startsWith('https://')) {
+    if (isExternalNavigationHref(href)) {
       return;
     }
 
     // Prevent default navigation
     e.preventDefault();
 
-    // Mode 1: Force refresh - bypass React entirely
-    if (forceRefresh) {
+    // 修改点：支持按用户设置将普通站内链接切换为浏览器原生整页跳转
+    if (
+      shouldUseBrowserAssignNavigation({
+        href,
+        target,
+        event: e,
+        forceRefresh,
+      })
+    ) {
       window.location.assign(href);
       return;
     }
@@ -106,6 +128,7 @@ export function FastLink({
       aria-label={ariaLabel}
       target={target}
       rel={target === '_blank' ? rel || 'noopener noreferrer' : rel}
+      style={style}
     >
       {children}
     </Link>

@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 
 import { useDownload } from '@/contexts/DownloadContext';
 import { normalizeDownloadSource } from '@/lib/download';
+import { getSeekKeyboardDelta } from '@/lib/user-menu-indicator';
 import { useDanmu } from '@/hooks/useDanmu';
 import type { DanmuManualOverride } from '@/hooks/useDanmu';
 import DownloadEpisodeSelector from '@/components/download/DownloadEpisodeSelector';
@@ -21,7 +22,6 @@ import EpisodeSelector from '@/components/EpisodeSelector';
 import NetDiskSearchResults from '@/components/NetDiskSearchResults';
 import AcgSearch from '@/components/AcgSearch';
 import PageLayout from '@/components/PageLayout';
-import SkipController, { SkipSettingsButton } from '@/components/SkipController';
 import VideoCard from '@/components/VideoCard';
 import CommentSection from '@/components/play/CommentSection';
 import DownloadButtons from '@/components/play/DownloadButtons';
@@ -39,21 +39,22 @@ import VideoCoverDisplay from '@/components/play/VideoCoverDisplay';
 import PlayErrorDisplay from '@/components/play/PlayErrorDisplay';
 import DanmuSettingsPanel from '@/components/play/DanmuSettingsPanel';
 import WebSRSettingsPanel from '@/components/play/WebSRSettingsPanel';
-import { SeekButtonsSettingsPanel } from '@/components/play/SeekButtonsSettingsPanel';
 import artplayerPluginChromecast from '@/lib/artplayer-plugin-chromecast';
 import artplayerPluginAutoThumbnail from '@/lib/artplayer-plugin-auto-thumbnail';
 import artplayerPluginLiquidGlass from '@/lib/artplayer-plugin-liquid-glass';
-import artplayerPluginSeekButtons from '@/lib/artplayer-plugin-seek-buttons';
 import { ClientCache } from '@/lib/client-cache';
 import {
   deleteFavorite,
   deletePlayRecord,
+  deleteSkipConfig,
   generateStorageKey,
   getAllFavorites,
   getAllPlayRecords,
+  getSkipConfig,
   isFavorited,
   saveFavorite,
   savePlayRecord,
+  saveSkipConfig,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanDetails, getDoubanComments, getDoubanActorMovies } from '@/lib/douban.client';
@@ -75,14 +76,58 @@ import {
   usePrefetchDoubanData,
 } from './hooks/usePlayPagePrefetch';
 
+// 🔧 修改点：复刻源仓库锁定态长按三倍速所需的触点坐标结构
+ type LongPressTouchPoint = {
+  x: number;
+  y: number;
+};
+
 // 播放速率持久化
 const PLAYER_PLAYBACK_RATE_KEY = 'moontv_player_playback_rate';
+const LOCKED_LONG_PRESS_RATE_KEY = 'moontv_locked_long_press_rate';
 const PREFERRED_AUDIO_LANG_KEY = 'preferred_audio_lang';
+const PLAYBACK_RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
-function sanitizePlaybackRate(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 1.0;
-  const allowedRates = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
-  return allowedRates.includes(value) ? value : 1.0;
+// 🔧 修改点：复刻源仓库锁定态长按三倍速配置，避免 ArtPlayer 锁定手势拦截后无法提速
+const DEFAULT_LOCKED_LONG_PRESS_RATE = 3;
+let LOCKED_LONG_PRESS_RATE = DEFAULT_LOCKED_LONG_PRESS_RATE;
+const LOCKED_LONG_PRESS_DELAY_MS = 1000;
+const LOCKED_LONG_PRESS_MOVE_THRESHOLD = 18;
+const LOCKED_LONG_PRESS_IGNORE_SELECTORS =
+  'button, a, input, textarea, select, label, [role="button"], [data-button], .art-controls, .art-setting, .art-selector, .art-control-lock, .art-progress, .art-bottom, .art-top, .moontv-seek-side-controls';
+
+// 🔧 修改点：复刻 LunaTV 快进快退配置模型，保持布局、秒数档位与 localStorage key 完全一致
+type SeekLayoutMode = 'off' | 'both' | 'left' | 'right';
+const SEEK_SECONDS_OPTIONS = [5, 10, 15, 30] as const;
+
+function sanitizeSeekLayoutMode(value: string | null): SeekLayoutMode {
+  if (value === 'off' || value === 'both' || value === 'left' || value === 'right') {
+    return value;
+  }
+  return 'both';
+}
+
+function sanitizeSeekSeconds(value: string | null): number {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 120) {
+    return Math.floor(parsed);
+  }
+  return 10;
+}
+
+function loadSeekLayoutMode(): SeekLayoutMode {
+  if (typeof window === 'undefined') return 'both';
+  return sanitizeSeekLayoutMode(localStorage.getItem('seek_layout_mode'));
+}
+
+function loadSeekSeconds(): number {
+  if (typeof window === 'undefined') return 10;
+  return sanitizeSeekSeconds(localStorage.getItem('seek_seconds'));
+}
+
+function sanitizePlaybackRate(value: unknown, fallback = 1.0): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return (PLAYBACK_RATE_OPTIONS as readonly number[]).includes(value) ? value : fallback;
 }
 
 function loadPlaybackRate(): number {
@@ -94,6 +139,29 @@ function loadPlaybackRate(): number {
   } catch {
     return 1.0;
   }
+}
+
+function loadLockedLongPressRate(): number {
+  if (typeof window === 'undefined') return DEFAULT_LOCKED_LONG_PRESS_RATE;
+  try {
+    const raw = localStorage.getItem(LOCKED_LONG_PRESS_RATE_KEY);
+    if (!raw) {
+      // 修改点：未设置本地偏好时，锁定态长按倍速回退到后台站点默认值
+      const runtimeConfig = (window as any).RUNTIME_CONFIG || {};
+      return sanitizePlaybackRate(
+        Number(runtimeConfig.DEFAULT_LOCKED_LONG_PRESS_RATE),
+        DEFAULT_LOCKED_LONG_PRESS_RATE
+      );
+    }
+    return sanitizePlaybackRate(Number(raw), DEFAULT_LOCKED_LONG_PRESS_RATE);
+  } catch {
+    return DEFAULT_LOCKED_LONG_PRESS_RATE;
+  }
+}
+
+function formatPlaybackRateNotice(rate: number): string {
+  const normalizedRate = sanitizePlaybackRate(rate);
+  return normalizedRate === 1.0 ? '视频: 正常' : `视频: ${normalizedRate}x`;
 }
 
 // 音轨辅助函数
@@ -278,11 +346,6 @@ function PlayPageClient() {
   const [celebrityWorks, setCelebrityWorks] = useState<any[]>([]);
   const [loadingCelebrityWorks, setLoadingCelebrityWorks] = useState(false);
 
-  // SkipController 相关状态
-  const [isSkipSettingOpen, setIsSkipSettingOpen] = useState(false);
-  const [currentPlayTime, setCurrentPlayTime] = useState(0);
-  const [videoDuration, setVideoDuration] = useState(0);
-
   // 弹幕设置面板状态
   const [isDanmuSettingsPanelOpen, setIsDanmuSettingsPanelOpen] = useState(false);
   const [isDanmuManualModalOpen, setIsDanmuManualModalOpen] = useState(false);
@@ -290,11 +353,31 @@ function PlayPageClient() {
   const [, setDanmuSettingsVersion] = useState(0);
   const [portalContainer, setPortalContainer] = useState<HTMLElement | null>(null);
 
+  // 🔧 修改点：复刻 LunaTV 跳过片头片尾配置状态，改为播放页菜单驱动的单视频配置
+  const [skipConfig, setSkipConfig] = useState<{
+    enable: boolean;
+    intro_time: number;
+    outro_time: number;
+  }>({
+    enable: false,
+    intro_time: 0,
+    outro_time: 0,
+  });
+  const skipConfigRef = useRef(skipConfig);
+  const lastSkipCheckRef = useRef(0);
+  const isSkipNextEpisodeTriggeredRef = useRef<boolean>(false);
+  useEffect(() => {
+    skipConfigRef.current = skipConfig;
+  }, [skipConfig]);
+
+  // 🔧 修改点：复刻 LunaTV 快进快退状态，使用 seek_layout_mode / seek_seconds 持久化配置
+  const [seekLayoutMode, setSeekLayoutMode] = useState<SeekLayoutMode>(() => loadSeekLayoutMode());
+  const [seekSeconds, setSeekSeconds] = useState<number>(() => loadSeekSeconds());
+  const seekLayoutModeRef = useRef<SeekLayoutMode>(seekLayoutMode);
+  const seekSecondsRef = useRef<number>(seekSeconds);
+
   // WebSR 设置面板状态
   const [isWebSRSettingsPanelOpen, setIsWebSRSettingsPanelOpen] = useState(false);
-
-  // 快进快退设置面板状态
-  const [isSeekButtonsSettingsPanelOpen, setIsSeekButtonsSettingsPanelOpen] = useState(false);
 
   // 下载选集面板状态
   const [showDownloadEpisodeSelector, setShowDownloadEpisodeSelector] = useState(false);
@@ -596,6 +679,19 @@ function PlayPageClient() {
       setNeedPrefer(false);
       setPlayerReady(false);
 
+      // 复刻 LunaTV 跳过片头片尾配置：切换视频时先重置当前菜单态，随后按当前视频重新读取
+      setSkipConfig({
+        enable: false,
+        intro_time: 0,
+        outro_time: 0,
+      });
+      skipConfigRef.current = {
+        enable: false,
+        intro_time: 0,
+        outro_time: 0,
+      };
+      lastSkipCheckRef.current = 0;
+
       // 触发重新加载（通过更新 reloadTrigger 来触发 initAll 重新执行）
       setReloadTrigger(prev => prev + 1);
     }
@@ -675,6 +771,8 @@ function PlayPageClient() {
     availableSourcesRef.current = availableSources;
     audioTracksRef.current = audioTracks;
     currentAudioTrackRef.current = currentAudioTrack;
+    seekLayoutModeRef.current = seekLayoutMode;
+    seekSecondsRef.current = seekSeconds;
   }, [
     blockAdEnabled,
     customAdFilterCode,
@@ -690,6 +788,9 @@ function PlayPageClient() {
     availableSources,
     audioTracks,
     currentAudioTrack,
+    seekLayoutMode,
+    seekSeconds,
+    skipConfig,
   ]);
 
   // 🎬 更新全屏标题层内容（集数变化时）
@@ -948,6 +1049,13 @@ function PlayPageClient() {
   const lastVolumeRef = useRef<number>(0.7);
   // 上次使用的播放速率，从 localStorage 恢复
   const lastPlaybackRateRef = useRef<number>(loadPlaybackRate());
+  // 🔧 修改点：复刻源仓库锁定态长按三倍速状态，确保锁定时仍可临时提速且松手后恢复原倍速
+  const lockedLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lockedLongPressTouchIdRef = useRef<number | null>(null);
+  const lockedLongPressStartPointRef = useRef<LongPressTouchPoint | null>(null);
+  const lockedLongPressRestoreRateRef = useRef<number>(loadPlaybackRate());
+  const isLockedLongPressActiveRef = useRef(false);
+  const lockedLongPressKeyboardActiveRef = useRef(false);
   // 🔥 修复：标记是否正在切换源/集数，用于阻止 ratechange 保存瞬态的播放速率重置
   const isSourceSwitchingRef = useRef(false);
 
@@ -995,7 +1103,6 @@ function PlayPageClient() {
   const episodeSwitchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isSourceChangingRef = useRef<boolean>(false); // 标记是否正在换源
   const isEpisodeChangingRef = useRef<boolean>(false); // 标记是否正在切换集数
-  const isSkipControllerTriggeredRef = useRef<boolean>(false); // 标记是否通过 SkipController 触发了下一集
   const videoEndedHandledRef = useRef<boolean>(false); // 🔥 标记当前视频的 video:ended 事件是否已经被处理过（防止多个监听器重复触发）
 
   // 🚀 新增：连续切换源防抖和资源管理
@@ -1043,8 +1150,8 @@ function PlayPageClient() {
   usePrefetchNextEpisode({
     detail,
     currentEpisodeIndex,
-    currentTime: currentPlayTime,
-    duration: videoDuration,
+    currentTime: 0,
+    duration: 0,
     source: currentSource,
     id: currentId,
   });
@@ -2788,6 +2895,146 @@ function PlayPageClient() {
     }
   };
 
+  // 🔧 修改点：复刻 LunaTV 跳过配置菜单同步与保存逻辑，替代旧跳过浮层设置
+  const syncSkipSettingsPanel = (config: {
+    enable: boolean;
+    intro_time: number;
+    outro_time: number;
+  }) => {
+    if (!artPlayerRef.current?.setting) return;
+
+    artPlayerRef.current.setting.update({
+      name: '跳过片头片尾',
+      html: '跳过片头片尾',
+      switch: config.enable,
+      onSwitch: function (item: any) {
+        const nextConfig = {
+          ...skipConfigRef.current,
+          enable: !item.switch,
+        };
+        handleSkipConfigChange(nextConfig);
+        return !item.switch;
+      },
+    });
+
+    artPlayerRef.current.setting.update({
+      name: '设置片头',
+      html: '设置片头',
+      icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="12" r="2" fill="#ffffff"/><path d="M9 12L17 12" stroke="#ffffff" stroke-width="2"/><path d="M17 6L17 18" stroke="#ffffff" stroke-width="2"/></svg>',
+      tooltip:
+        config.intro_time === 0
+          ? '设置片头时间'
+          : `${formatTime(config.intro_time)}`,
+      onClick: function () {
+        const currentTime = artPlayerRef.current?.currentTime || 0;
+        if (currentTime > 0) {
+          const nextConfig = {
+            ...skipConfigRef.current,
+            intro_time: currentTime,
+          };
+          handleSkipConfigChange(nextConfig);
+          return `${formatTime(currentTime)}`;
+        }
+      },
+    });
+
+    artPlayerRef.current.setting.update({
+      name: '设置片尾',
+      html: '设置片尾',
+      icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 6L7 18" stroke="#ffffff" stroke-width="2"/><path d="M7 12L15 12" stroke="#ffffff" stroke-width="2"/><circle cx="19" cy="12" r="2" fill="#ffffff"/></svg>',
+      tooltip:
+        config.outro_time >= 0
+          ? '设置片尾时间'
+          : `-${formatTime(-config.outro_time)}`,
+      onClick: function () {
+        const outroTime =
+          -(
+            artPlayerRef.current?.duration -
+            artPlayerRef.current?.currentTime
+          ) || 0;
+        if (outroTime < 0) {
+          const nextConfig = {
+            ...skipConfigRef.current,
+            outro_time: outroTime,
+          };
+          handleSkipConfigChange(nextConfig);
+          return `-${formatTime(-outroTime)}`;
+        }
+      },
+    });
+  };
+
+  const handleSkipConfigChange = async (newConfig: {
+    enable: boolean;
+    intro_time: number;
+    outro_time: number;
+  }) => {
+    if (!currentSourceRef.current || !currentIdRef.current) return;
+
+    try {
+      setSkipConfig(newConfig);
+      skipConfigRef.current = newConfig;
+
+      if (!newConfig.enable && !newConfig.intro_time && !newConfig.outro_time) {
+        await deleteSkipConfig(currentSourceRef.current, currentIdRef.current);
+      } else {
+        await saveSkipConfig(
+          currentSourceRef.current,
+          currentIdRef.current,
+          newConfig
+        );
+      }
+
+      syncSkipSettingsPanel(newConfig);
+      console.log('跳过片头片尾配置已保存:', newConfig);
+    } catch (err) {
+      console.error('保存跳过片头片尾配置失败:', err);
+    }
+  };
+
+  const applySkipLogic = () => {
+    if (!skipConfigRef.current.enable || !artPlayerRef.current) return;
+
+    const currentTime = artPlayerRef.current.currentTime || 0;
+    const duration = artPlayerRef.current.duration || 0;
+    const now = Date.now();
+
+    // 限制跳过检查频率为1.5秒一次
+    if (now - lastSkipCheckRef.current < 1500) return;
+    lastSkipCheckRef.current = now;
+
+    // 跳过片头
+    if (
+      skipConfigRef.current.intro_time > 0 &&
+      currentTime < skipConfigRef.current.intro_time
+    ) {
+      artPlayerRef.current.currentTime = skipConfigRef.current.intro_time;
+      artPlayerRef.current.notice.show = `已跳过片头 (${formatTime(
+        skipConfigRef.current.intro_time
+      )})`;
+    }
+
+    // 跳过片尾
+    if (
+      skipConfigRef.current.outro_time < 0 &&
+      duration > 0 &&
+      currentTime > artPlayerRef.current.duration + skipConfigRef.current.outro_time
+    ) {
+      if (
+        currentEpisodeIndexRef.current <
+        (detailRef.current?.episodes?.length || 1) - 1
+      ) {
+        isSkipNextEpisodeTriggeredRef.current = true;
+        handleNextEpisode();
+      } else {
+        artPlayerRef.current.pause();
+      }
+      artPlayerRef.current.notice.show = `已跳过片尾 (${formatTime(
+        skipConfigRef.current.outro_time
+      )})`;
+    }
+  };
+
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
     constructor(config: any) {
       super(config);
@@ -2824,12 +3071,11 @@ function PlayPageClient() {
     // 🔥 标记正在切换集数（只在非换源时）
     if (!isSourceChangingRef.current) {
       isEpisodeChangingRef.current = true;
-      // 🔥 关键修复：延迟重置 SkipController 触发标志，避免新集数立即触发跳过
-      // 给 SkipController 的冷却时间（3秒）足够的时间来防止重复触发
+      // 🔧 修改点：复刻 LunaTV 跳过逻辑后保留冷却重置，避免片尾自动切集与 video:ended 重复触发
       setTimeout(() => {
-        isSkipControllerTriggeredRef.current = false;
+        isSkipNextEpisodeTriggeredRef.current = false;
         console.log('✅ 延迟重置自动跳过标志，允许新集数自动跳过片头片尾');
-      }, 3500); // 比 SkipController 的冷却时间（3000ms）稍长
+      }, 3500);
       videoEndedHandledRef.current = false;
       console.log('🔄 开始切换集数');
     }
@@ -3386,6 +3632,28 @@ function PlayPageClient() {
     initFromHistory();
   }, []);
 
+  // 🔧 修改点：复刻 LunaTV 跳过配置逻辑，读取当前视频配置并同步到 ArtPlayer 菜单
+  useEffect(() => {
+    const initSkipConfig = async () => {
+      if (!currentSource || !currentId) return;
+
+      try {
+        const config = await getSkipConfig(currentSource, currentId);
+        if (config) {
+          setSkipConfig({
+            enable: Boolean(config.enable),
+            intro_time: Number(config.intro_time) || 0,
+            outro_time: Number(config.outro_time) || 0,
+          });
+        }
+      } catch (err) {
+        console.error('读取跳过片头片尾配置失败:', err);
+      }
+    };
+
+    initSkipConfig();
+  }, []);
+
   // 🚀 优化的换源处理（防连续点击）
   const handleSourceChange = async (
     newSource: string,
@@ -3618,8 +3886,10 @@ function PlayPageClient() {
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyboardShortcuts);
+    document.addEventListener('keyup', handleKeyboardKeyUp);
     return () => {
       document.removeEventListener('keydown', handleKeyboardShortcuts);
+      document.removeEventListener('keyup', handleKeyboardKeyUp);
     };
   }, []);
 
@@ -3699,17 +3969,106 @@ function PlayPageClient() {
     const d = detailRef.current;
     const idx = currentEpisodeIndexRef.current;
     if (d && d.episodes && idx < d.episodes.length - 1) {
-      // 🔥 关键修复：通过 SkipController 自动跳下一集时，不保存播放进度
+      // 🔥 关键修复：通过跳过片尾自动切下一集时，不保存片尾进度
       // 因为此时的播放位置是片尾，用户并没有真正看到这个位置
       // 如果保存了片尾的进度，下次"继续观看"会从片尾开始，导致进度错误
       // if (artPlayerRef.current && !artPlayerRef.current.paused) {
       //   saveCurrentPlayProgress();
       // }
 
-      // 🔑 标记通过 SkipController 触发了下一集
-      isSkipControllerTriggeredRef.current = true;
+      // 🔑 标记通过跳过片尾触发了下一集
+      isSkipNextEpisodeTriggeredRef.current = true;
       setCurrentEpisodeIndex(idx + 1);
     }
+  };
+
+  // 🔧 修改点：复刻 LunaTV 快进快退逻辑，按钮和键盘共用同一套秒数与边界钳制
+  const applySeekDelta = (deltaSeconds: number) => {
+    if (!artPlayerRef.current) return;
+
+    const currentTime = Number(artPlayerRef.current.currentTime) || 0;
+    const duration = Number(artPlayerRef.current.duration) || 0;
+    const targetTime =
+      duration > 0
+        ? Math.max(0, Math.min(duration, currentTime + deltaSeconds))
+        : Math.max(0, currentTime + deltaSeconds);
+
+    artPlayerRef.current.currentTime = targetTime;
+
+    const absSeconds = Math.abs(deltaSeconds);
+    artPlayerRef.current.notice.show = `${
+      deltaSeconds >= 0 ? '快进' : '快退'
+    } ${absSeconds} 秒`;
+  };
+
+  const handleSeekForward = () => {
+    applySeekDelta(seekSecondsRef.current);
+  };
+
+  const handleSeekRewind = () => {
+    applySeekDelta(-seekSecondsRef.current);
+  };
+
+  const getSeekLayoutModeLabel = (mode: SeekLayoutMode) => {
+    if (mode === 'off') return '关闭';
+    if (mode === 'left') return '左手';
+    if (mode === 'right') return '右手';
+    return '双手';
+  };
+
+  const getSeekLayoutSelectorOptions = (mode: SeekLayoutMode) => [
+    { html: '关闭', value: 'off', default: mode === 'off' },
+    { html: '双手', value: 'both', default: mode === 'both' },
+    { html: '左手', value: 'left', default: mode === 'left' },
+    { html: '右手', value: 'right', default: mode === 'right' },
+  ];
+
+  const getSeekSecondsSelectorOptions = (seconds: number) =>
+    SEEK_SECONDS_OPTIONS.map((option) => ({
+      html: `${option} 秒`,
+      value: option,
+      default: option === seconds,
+    }));
+
+  const syncSeekSettingsPanel = (mode: SeekLayoutMode, seconds: number) => {
+    if (!artPlayerRef.current?.setting) return;
+
+    artPlayerRef.current.setting.update({
+      name: '快进快退布局',
+      html: '快进快退布局',
+      tooltip: getSeekLayoutModeLabel(mode),
+      selector: getSeekLayoutSelectorOptions(mode),
+      onSelect: function (item: any) {
+        const value = item?.value;
+        const nextMode =
+          value === 'off' || value === 'both' || value === 'left' || value === 'right'
+            ? (value as SeekLayoutMode)
+            : seekLayoutModeRef.current;
+
+        localStorage.setItem('seek_layout_mode', nextMode);
+        setSeekLayoutMode(nextMode);
+        syncSeekSettingsPanel(nextMode, seekSecondsRef.current);
+        return getSeekLayoutModeLabel(nextMode);
+      },
+    });
+
+    artPlayerRef.current.setting.update({
+      name: '快进快退秒数',
+      html: '快进快退秒数',
+      tooltip: `${seconds} 秒`,
+      selector: getSeekSecondsSelectorOptions(seconds),
+      onSelect: function (item: any) {
+        const value = Number(item?.value);
+        const nextSeconds = SEEK_SECONDS_OPTIONS.includes(value as 5 | 10 | 15 | 30)
+          ? value
+          : seekSecondsRef.current;
+
+        localStorage.setItem('seek_seconds', String(nextSeconds));
+        setSeekSeconds(nextSeconds);
+        syncSeekSettingsPanel(seekLayoutModeRef.current, nextSeconds);
+        return `${nextSeconds} 秒`;
+      },
+    });
   };
 
   // ---------------------------------------------------------------------------
@@ -3723,6 +4082,32 @@ function PlayPageClient() {
       (e.target as HTMLElement).tagName === 'TEXTAREA'
     )
       return;
+
+    if (e.key === 'ArrowRight' && !e.altKey) {
+      if (e.repeat) {
+        e.preventDefault();
+        return;
+      }
+
+      lockedLongPressKeyboardActiveRef.current = true;
+      clearLockedLongPressTimer();
+      lockedLongPressTimerRef.current = setTimeout(() => {
+        if (!lockedLongPressKeyboardActiveRef.current) return;
+
+        const player = artPlayerRef.current;
+        if (!player) return;
+
+        LOCKED_LONG_PRESS_RATE = loadLockedLongPressRate();
+        const currentRate = sanitizePlaybackRate(player.playbackRate);
+        lockedLongPressRestoreRateRef.current = currentRate;
+        isLockedLongPressActiveRef.current = true;
+        player.playbackRate = LOCKED_LONG_PRESS_RATE;
+        player.notice.show = formatPlaybackRateNotice(LOCKED_LONG_PRESS_RATE);
+      }, LOCKED_LONG_PRESS_DELAY_MS);
+
+      e.preventDefault();
+      return;
+    }
 
     // Alt + 左箭头 = 上一集
     if (e.altKey && e.key === 'ArrowLeft') {
@@ -3742,23 +4127,15 @@ function PlayPageClient() {
       }
     }
 
-    // 左箭头 = 快退
-    if (!e.altKey && e.key === 'ArrowLeft') {
-      if (artPlayerRef.current && artPlayerRef.current.currentTime > 5) {
-        artPlayerRef.current.currentTime -= 10;
-        e.preventDefault();
-      }
-    }
-
-    // 右箭头 = 快进
-    if (!e.altKey && e.key === 'ArrowRight') {
-      if (
-        artPlayerRef.current &&
-        artPlayerRef.current.currentTime < artPlayerRef.current.duration - 5
-      ) {
-        artPlayerRef.current.currentTime += 10;
-        e.preventDefault();
-      }
+    // 🔧 修改点：布局关闭仅隐藏边缘按钮，不再禁用桌面端左右键快进快退
+    const seekKeyboardDelta = getSeekKeyboardDelta({
+      altKey: e.altKey,
+      key: e.key,
+      seekSeconds: seekSecondsRef.current,
+    });
+    if (seekKeyboardDelta !== null) {
+      applySeekDelta(seekKeyboardDelta);
+      e.preventDefault();
     }
 
     // 上箭头 = 音量+
@@ -3800,6 +4177,22 @@ function PlayPageClient() {
         e.preventDefault();
       }
     }
+  };
+
+  const handleKeyboardKeyUp = (e: KeyboardEvent) => {
+    if (e.key !== 'ArrowRight' || !lockedLongPressKeyboardActiveRef.current) {
+      return;
+    }
+
+    const wasLongPressActive = isLockedLongPressActiveRef.current;
+    lockedLongPressKeyboardActiveRef.current = false;
+    stopLockedLongPressRate();
+
+    if (!wasLongPressActive) {
+      applySeekDelta(seekSecondsRef.current);
+    }
+
+    e.preventDefault();
   };
 
   // ---------------------------------------------------------------------------
@@ -4379,11 +4772,12 @@ function PlayPageClient() {
       }
 
       // 创建新的播放器实例
-      Artplayer.PLAYBACK_RATE = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+      Artplayer.PLAYBACK_RATE = [...PLAYBACK_RATE_OPTIONS];
       Artplayer.USE_RAF = false;
       Artplayer.FULLSCREEN_WEB_IN_BODY = true;
       // 重新启用5.3.0内存优化功能，但使用false参数避免清空DOM
       Artplayer.REMOVE_SRC_WHEN_DESTROY = true;
+
 
       artPlayerRef.current = new Artplayer({
         container: artRef.current,
@@ -4639,7 +5033,115 @@ function PlayPageClient() {
             },
           },
           {
+            // 🔧 修改点：复刻 LunaTV 的快进快退布局设置项
+            name: '快进快退布局',
+            html: '快进快退布局',
+            tooltip: getSeekLayoutModeLabel(seekLayoutModeRef.current),
+            selector: getSeekLayoutSelectorOptions(seekLayoutModeRef.current),
+            onSelect: function (item: any) {
+              const value = item?.value;
+              const nextMode =
+                value === 'off' || value === 'both' || value === 'left' || value === 'right'
+                  ? (value as SeekLayoutMode)
+                  : seekLayoutModeRef.current;
+              localStorage.setItem('seek_layout_mode', nextMode);
+              setSeekLayoutMode(nextMode);
+              syncSeekSettingsPanel(nextMode, seekSecondsRef.current);
+              return getSeekLayoutModeLabel(nextMode);
+            },
+          },
+          {
+            // 🔧 修改点：复刻 LunaTV 的快进快退秒数设置项，固定 5/10/15/30 档位
+            name: '快进快退秒数',
+            html: '快进快退秒数',
+            tooltip: `${seekSecondsRef.current} 秒`,
+            selector: getSeekSecondsSelectorOptions(seekSecondsRef.current),
+            onSelect: function (item: any) {
+              const value = Number(item?.value);
+              const nextSeconds = SEEK_SECONDS_OPTIONS.includes(value as 5 | 10 | 15 | 30)
+                ? value
+                : seekSecondsRef.current;
+              localStorage.setItem('seek_seconds', String(nextSeconds));
+              setSeekSeconds(nextSeconds);
+              syncSeekSettingsPanel(seekLayoutModeRef.current, nextSeconds);
+              return `${nextSeconds} 秒`;
+            },
+          },
+          {
+            // 🔧 修改点：复刻 LunaTV 的播放页菜单式跳过片头片尾开关
+            name: '跳过片头片尾',
+            html: '跳过片头片尾',
+            switch: skipConfigRef.current.enable,
+            onSwitch: function (item: any) {
+              const nextConfig = {
+                ...skipConfigRef.current,
+                enable: !item.switch,
+              };
+              handleSkipConfigChange(nextConfig);
+              return !item.switch;
+            },
+          },
+          {
+            // 🔧 修改点：复刻 LunaTV 的删除跳过配置菜单项
+            html: '删除跳过配置',
+            onClick: function () {
+              handleSkipConfigChange({
+                enable: false,
+                intro_time: 0,
+                outro_time: 0,
+              });
+              return '';
+            },
+          },
+          {
+            // 🔧 修改点：复刻 LunaTV 的设置片头菜单项，以当前播放时间作为片头结束时间
+            name: '设置片头',
+            html: '设置片头',
+            icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="12" r="2" fill="#ffffff"/><path d="M9 12L17 12" stroke="#ffffff" stroke-width="2"/><path d="M17 6L17 18" stroke="#ffffff" stroke-width="2"/></svg>',
+            tooltip:
+              skipConfigRef.current.intro_time === 0
+                ? '设置片头时间'
+                : `${formatTime(skipConfigRef.current.intro_time)}`,
+            onClick: function () {
+              const currentTime = artPlayerRef.current?.currentTime || 0;
+              if (currentTime > 0) {
+                const nextConfig = {
+                  ...skipConfigRef.current,
+                  intro_time: currentTime,
+                };
+                handleSkipConfigChange(nextConfig);
+                return `${formatTime(currentTime)}`;
+              }
+            },
+          },
+          {
+            // 🔧 修改点：复刻 LunaTV 的设置片尾菜单项，以距离结尾的负数秒保存
+            name: '设置片尾',
+            html: '设置片尾',
+            icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 6L7 18" stroke="#ffffff" stroke-width="2"/><path d="M7 12L15 12" stroke="#ffffff" stroke-width="2"/><circle cx="19" cy="12" r="2" fill="#ffffff"/></svg>',
+            tooltip:
+              skipConfigRef.current.outro_time >= 0
+                ? '设置片尾时间'
+                : `-${formatTime(-skipConfigRef.current.outro_time)}`,
+            onClick: function () {
+              const outroTime =
+                -(
+                  artPlayerRef.current?.duration -
+                  artPlayerRef.current?.currentTime
+                ) || 0;
+              if (outroTime < 0) {
+                const nextConfig = {
+                  ...skipConfigRef.current,
+                  outro_time: outroTime,
+                };
+                handleSkipConfigChange(nextConfig);
+                return `-${formatTime(-outroTime)}`;
+              }
+            },
+          },
+          {
             name: '外部弹幕',
+
             html: '外部弹幕',
             icon: '<text x="50%" y="50%" font-size="14" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">外</text>',
             tooltip: externalDanmuEnabled ? '外部弹幕已开启' : '外部弹幕已关闭',
@@ -4718,49 +5220,6 @@ function PlayPageClient() {
               };
 
               return modeNames[mode] || item.html;
-            },
-          },
-          {
-            html: '快进快退设置',
-            icon: '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>',
-            tooltip: '打开快进快退设置面板',
-            onClick: function () {
-              setIsSeekButtonsSettingsPanelOpen(true);
-              if (artPlayerRef.current) {
-                artPlayerRef.current.setting.show = false;
-              }
-              return '打开快进快退设置面板';
-            },
-          },
-          {
-            name: '控制栏遮挡度',
-            html: '控制栏遮挡度',
-            icon: '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><path d="M3 9h18M9 21V9"></path></svg>',
-            tooltip: (() => {
-              const opacity = parseFloat(localStorage.getItem('control_bar_opacity') || '0.5');
-              return `${Math.round(opacity * 100)}%`;
-            })(),
-            range: [
-              parseFloat(localStorage.getItem('control_bar_opacity') || '0.5'),
-              0.0,
-              0.8,
-              0.1
-            ],
-            onChange: function (item: any) {
-              const opacity = item.range[0];
-              localStorage.setItem('control_bar_opacity', opacity.toString());
-
-              // 实时应用透明度到毛玻璃容器
-              const liquidGlass = document.querySelector('.art-liquid-glass') as HTMLElement;
-              if (liquidGlass) {
-                // 调整背景色透明度
-                liquidGlass.style.setProperty('background-color', `rgba(0, 0, 0, ${opacity})`, 'important');
-                // 同时调整模糊效果：透明度越低，模糊越少
-                const blurAmount = Math.max(0, opacity * 15); // 0-12px
-                liquidGlass.style.setProperty('backdrop-filter', `blur(${blurAmount}px)`, 'important');
-              }
-
-              return `${Math.round(opacity * 100)}%`;
             },
           },
           ...(webGPUSupported ? [
@@ -5020,21 +5479,20 @@ function PlayPageClient() {
             number: 100,
             scale: 1,
           }),
-          // 快进/快退按钮插件 - 在控制栏添加 ±10秒 按钮
-          artplayerPluginSeekButtons({
-            seekTime: parseInt(localStorage.getItem('seek_time') || '10', 10),
-            mobileLayout: (localStorage.getItem('seek_layout') || 'both') as 'both' | 'left' | 'right',
-          }),
+          // 🔧 修改点：移除快进快退插件，保留其他播放增强插件
         ],
       });
 
       // 设置 Portal 容器为 ArtPlayer 的 $player 元素（全屏时只有该元素可见）
       setPortalContainer(artPlayerRef.current.template.$player);
 
-      // 监听播放器事件
+      // 🔧 修改点：复刻 LunaTV 的播放器就绪回调，同步跳过菜单状态并恢复当前视频配置
       artPlayerRef.current.on('ready', async () => {
         setError(null);
         setPlayerReady(true); // 标记播放器已就绪，启用观影室同步
+
+        // 播放器就绪后同步跳过菜单状态，确保当前视频的开关/时间显示正确
+        syncSkipSettingsPanel(skipConfigRef.current);
 
         // 使用ArtPlayer layers API添加分辨率徽章（带渐变和发光效果）
         const video = artPlayerRef.current.video as HTMLVideoElement;
@@ -5045,16 +5503,8 @@ function PlayPageClient() {
           video.style.objectFit = savedObjectFit;
         }
 
-        // 🎨 应用保存的控制栏透明度设置（毛玻璃效果）
-        const savedOpacity = parseFloat(localStorage.getItem('control_bar_opacity') || '0.5');
-        const liquidGlass = document.querySelector('.art-liquid-glass') as HTMLElement;
-        if (liquidGlass) {
-          // 调整背景色透明度
-          liquidGlass.style.setProperty('background-color', `rgba(0, 0, 0, ${savedOpacity})`, 'important');
-          // 同时调整模糊效果：透明度越低，模糊越少
-          const blurAmount = Math.max(0, savedOpacity * 15); // 0-12px
-          liquidGlass.style.setProperty('backdrop-filter', `blur(${blurAmount}px)`, 'important');
-        }
+        // 🔧 修改点：播放器 ready 后同步快进快退设置面板，确保刷新后 tooltip/选中态正确
+        syncSeekSettingsPanel(seekLayoutModeRef.current, seekSecondsRef.current);
 
         // 添加分辨率徽章layer
         artPlayerRef.current.layers.add({
@@ -5683,6 +6133,10 @@ function PlayPageClient() {
             );
             return;
           }
+          // 🔧 修改点：复刻源仓库保护逻辑，锁定态长按临时 3x 不写回 localStorage 污染默认倍速
+          if (isLockedLongPressActiveRef.current) {
+            return;
+          }
         lastPlaybackRateRef.current = sanitizePlaybackRate(
           artPlayerRef.current.playbackRate,
         );
@@ -5706,28 +6160,6 @@ function PlayPageClient() {
           if (clockLayer) {
             clockLayer.style.display = isFullscreen ? 'flex' : 'none';
           }
-
-        // 应用保存的透明度设置
-        const liquidGlass = artPlayerRef.current?.template?.$player?.querySelector('.art-liquid-glass') as HTMLElement | null;
-        if (liquidGlass) {
-          const savedOpacity = parseFloat(localStorage.getItem('control_bar_opacity') || '0.5');
-          if (isFullscreen) {
-            // 全屏：禁用 backdrop-filter，使用渐变 + 阴影（根据用户透明度调整）
-            liquidGlass.style.setProperty('backdrop-filter', 'none', 'important');
-            liquidGlass.style.setProperty('-webkit-backdrop-filter', 'none', 'important');
-            liquidGlass.style.setProperty('background-color', 'transparent', 'important');
-            liquidGlass.style.setProperty('background-image', `linear-gradient(to top, rgba(0, 0, 0, ${savedOpacity}), rgba(0, 0, 0, ${savedOpacity * 0.6}), transparent)`, 'important');
-            liquidGlass.style.setProperty('box-shadow', `0 -10px 30px rgba(0, 0, 0, ${savedOpacity * 0.8})`, 'important');
-          } else {
-            // 非全屏：恢复毛玻璃效果
-            const blurAmount = Math.max(0, savedOpacity * 15);
-            liquidGlass.style.setProperty('backdrop-filter', `blur(${blurAmount}px)`, 'important');
-            liquidGlass.style.setProperty('-webkit-backdrop-filter', `blur(${blurAmount}px)`, 'important');
-            liquidGlass.style.setProperty('background-color', `rgba(0, 0, 0, ${savedOpacity})`, 'important');
-            liquidGlass.style.setProperty('background-image', 'none', 'important');
-            liquidGlass.style.setProperty('box-shadow', 'none', 'important');
-          }
-        }
 
         if (isFullscreen) {
           // 进入全屏后，延迟100ms触发控制栏自动隐藏
@@ -5902,41 +6334,15 @@ function PlayPageClient() {
 
       // 监听视频播放结束事件，自动播放下一集
       artPlayerRef.current.on('video:ended', () => {
-        const idx = currentEpisodeIndexRef.current;
-
-        // 🔥 关键修复：首先检查这个 video:ended 事件是否已经被处理过
-        if (videoEndedHandledRef.current) {
-          return;
-        }
-
-        // 🔑 检查是否已经通过 SkipController 触发了下一集，避免重复触发
-        if (isSkipControllerTriggeredRef.current) {
-          videoEndedHandledRef.current = true;
-          // 🔥 关键修复：延迟重置标志，等待新集数开始加载
-          setTimeout(() => {
-            isSkipControllerTriggeredRef.current = false;
-          }, 2000);
-          return;
-        }
-
-        const d = detailRef.current;
-        if (d && d.episodes && idx < d.episodes.length - 1) {
-          videoEndedHandledRef.current = true;
-          setTimeout(() => {
-            setCurrentEpisodeIndex(idx + 1);
-          }, 1000);
-        }
+        releaseWakeLock();
       });
-
-      // 合并的timeupdate监听器 - 处理跳过片头片尾和保存进度
       artPlayerRef.current.on('video:timeupdate', () => {
         const currentTime = artPlayerRef.current.currentTime || 0;
         const duration = artPlayerRef.current.duration || 0;
         const now = performance.now(); // 使用performance.now()更精确
 
-        // 更新 SkipController 所需的时间信息
-        setCurrentPlayTime(currentTime);
-        setVideoDuration(duration);
+        // 更新跳过逻辑所需的时间信息
+        applySkipLogic();
 
         // 保存播放进度逻辑 - 优化保存间隔以减少网络开销
         const saveNow = Date.now();
@@ -6039,6 +6445,9 @@ function PlayPageClient() {
       // 清理WebSR
       destroyWebSR();
 
+      // 🔧 修改点：组件卸载时停止源仓库同款锁定态长按三倍速，避免残留临时 3x
+      stopLockedLongPressRate();
+
       // 销毁播放器实例
       cleanupPlayer();
     };
@@ -6110,6 +6519,130 @@ function PlayPageClient() {
       document.body.scrollTop = 0;
     }
   };
+
+  // 🔧 修改点：复刻源仓库锁定态长按三倍速实现，统一清理长按定时器
+  const clearLockedLongPressTimer = useCallback(() => {
+    if (lockedLongPressTimerRef.current) {
+      clearTimeout(lockedLongPressTimerRef.current);
+      lockedLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  // 🔧 修改点：复刻源仓库锁定态长按三倍速结束逻辑，松手后恢复原始倍速并提示当前倍速
+  const stopLockedLongPressRate = useCallback(() => {
+    clearLockedLongPressTimer();
+    lockedLongPressTouchIdRef.current = null;
+    lockedLongPressStartPointRef.current = null;
+    lockedLongPressKeyboardActiveRef.current = false;
+
+    if (!isLockedLongPressActiveRef.current) {
+      return;
+    }
+
+    const player = artPlayerRef.current;
+    const restoreRate = sanitizePlaybackRate(lockedLongPressRestoreRateRef.current);
+    if (player) {
+      if (Math.abs(player.playbackRate - restoreRate) > 0.01) {
+        player.playbackRate = restoreRate;
+      }
+      player.notice.show = formatPlaybackRateNotice(restoreRate);
+    }
+
+    isLockedLongPressActiveRef.current = false;
+  }, [clearLockedLongPressTimer]);
+
+  // 🔧 修改点：复刻源仓库忽略目标判定，避免锁定态长按误伤按钮、控制栏、进度条等交互
+  const isLockedLongPressIgnoredTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest(LOCKED_LONG_PRESS_IGNORE_SELECTORS));
+  }, []);
+
+  // 🔧 修改点：复刻源仓库锁定态判定方式，直接读取 ArtPlayer 根节点上的 art-lock class
+  const isArtPlayerLocked = useCallback(() => {
+    const playerRoot = portalContainer || artPlayerRef.current?.template?.$player;
+    return Boolean(playerRoot?.classList?.contains('art-lock'));
+  }, [portalContainer]);
+
+  // 🔧 修改点：复刻源仓库做法，在播放器根节点捕获 touch 事件，仅为锁定态补充长按临时 3 倍速能力
+  useEffect(() => {
+    const playerRoot = portalContainer || artPlayerRef.current?.template?.$player;
+    if (!playerRoot) return;
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        stopLockedLongPressRate();
+        return;
+      }
+
+      if (!isArtPlayerLocked()) {
+        return;
+      }
+
+      if (isLockedLongPressIgnoredTarget(event.target)) {
+        return;
+      }
+
+      const touch = event.touches[0];
+      lockedLongPressTouchIdRef.current = touch.identifier;
+      lockedLongPressStartPointRef.current = { x: touch.clientX, y: touch.clientY };
+      clearLockedLongPressTimer();
+
+      lockedLongPressTimerRef.current = setTimeout(() => {
+        const player = artPlayerRef.current;
+        if (!player || !isArtPlayerLocked()) return;
+
+        LOCKED_LONG_PRESS_RATE = loadLockedLongPressRate();
+        const currentRate = sanitizePlaybackRate(player.playbackRate);
+        lockedLongPressRestoreRateRef.current = currentRate;
+        isLockedLongPressActiveRef.current = true;
+        player.playbackRate = LOCKED_LONG_PRESS_RATE;
+        player.notice.show = formatPlaybackRateNotice(LOCKED_LONG_PRESS_RATE);
+      }, LOCKED_LONG_PRESS_DELAY_MS);
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const activeTouchId = lockedLongPressTouchIdRef.current;
+      const startPoint = lockedLongPressStartPointRef.current;
+      if (activeTouchId === null || !startPoint) return;
+
+      const activeTouch = Array.from(event.touches).find(
+        touch => touch.identifier === activeTouchId,
+      );
+      if (!activeTouch) return;
+
+      const deltaX = activeTouch.clientX - startPoint.x;
+      const deltaY = activeTouch.clientY - startPoint.y;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+      if (distance > LOCKED_LONG_PRESS_MOVE_THRESHOLD) {
+        stopLockedLongPressRate();
+      }
+    };
+
+    const handleTouchEnd = () => {
+      stopLockedLongPressRate();
+    };
+
+    playerRoot.addEventListener('touchstart', handleTouchStart, true);
+    playerRoot.addEventListener('touchmove', handleTouchMove, true);
+    playerRoot.addEventListener('touchend', handleTouchEnd, true);
+    playerRoot.addEventListener('touchcancel', handleTouchEnd, true);
+    document.addEventListener('visibilitychange', handleTouchEnd);
+
+    return () => {
+      playerRoot.removeEventListener('touchstart', handleTouchStart, true);
+      playerRoot.removeEventListener('touchmove', handleTouchMove, true);
+      playerRoot.removeEventListener('touchend', handleTouchEnd, true);
+      playerRoot.removeEventListener('touchcancel', handleTouchEnd, true);
+      document.removeEventListener('visibilitychange', handleTouchEnd);
+      stopLockedLongPressRate();
+    };
+  }, [
+    clearLockedLongPressTimer,
+    isArtPlayerLocked,
+    isLockedLongPressIgnoredTarget,
+    portalContainer,
+    stopLockedLongPressRate,
+  ]);
 
   if (loading) {
     return (
@@ -6189,6 +6722,129 @@ function PlayPageClient() {
                   className='bg-black w-full h-full rounded-xl overflow-hidden shadow-lg'
                 ></div>
 
+                {/* 🔧 修改点：复刻 LunaTV 快进快退边缘按钮，使用源仓库同款布局/样式容器 */}
+                {seekLayoutMode !== 'off' &&
+                  (portalContainer ? createPortal(
+                    <div
+                      className='moontv-seek-side-controls-layer'
+                      data-hand-mode={seekLayoutMode === 'both' ? 'both' : seekLayoutMode}
+                    >
+                      {(seekLayoutMode === 'both' || seekLayoutMode === 'left') && (
+                        <>
+                          <button
+                            type='button'
+                            className={`moontv-seek-side-controls ${
+                              seekLayoutMode === 'both'
+                                ? 'moontv-seek-side-controls--rewind moontv-seek-side-controls--left'
+                                : 'moontv-seek-side-controls--rewind'
+                            }`}
+                            onClick={handleSeekRewind}
+                            aria-label={`快退 ${seekSeconds} 秒`}
+                          >
+                            {`↺${seekSeconds}`}
+                          </button>
+                          {seekLayoutMode === 'left' && (
+                            <button
+                              type='button'
+                              className='moontv-seek-side-controls moontv-seek-side-controls--forward'
+                              onClick={handleSeekForward}
+                              aria-label={`快进 ${seekSeconds} 秒`}
+                            >
+                              {`↻${seekSeconds}`}
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      {(seekLayoutMode === 'both' || seekLayoutMode === 'right') && (
+                        <>
+                          <button
+                            type='button'
+                            className={`moontv-seek-side-controls ${
+                              seekLayoutMode === 'both'
+                                ? 'moontv-seek-side-controls--forward moontv-seek-side-controls--right'
+                                : 'moontv-seek-side-controls--forward'
+                            }`}
+                            onClick={handleSeekForward}
+                            aria-label={`快进 ${seekSeconds} 秒`}
+                          >
+                            {`↻${seekSeconds}`}
+                          </button>
+                          {seekLayoutMode === 'right' && (
+                            <button
+                              type='button'
+                              className='moontv-seek-side-controls moontv-seek-side-controls--rewind'
+                              onClick={handleSeekRewind}
+                              aria-label={`快退 ${seekSeconds} 秒`}
+                            >
+                              {`↺${seekSeconds}`}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>,
+                    portalContainer,
+                  ) : (
+                    <div
+                      className='moontv-seek-side-controls-layer'
+                      data-hand-mode={seekLayoutMode === 'both' ? 'both' : seekLayoutMode}
+                    >
+                      {(seekLayoutMode === 'both' || seekLayoutMode === 'left') && (
+                        <>
+                          <button
+                            type='button'
+                            className={`moontv-seek-side-controls ${
+                              seekLayoutMode === 'both'
+                                ? 'moontv-seek-side-controls--rewind moontv-seek-side-controls--left'
+                                : 'moontv-seek-side-controls--rewind'
+                            }`}
+                            onClick={handleSeekRewind}
+                            aria-label={`快退 ${seekSeconds} 秒`}
+                          >
+                            {`↺${seekSeconds}`}
+                          </button>
+                          {seekLayoutMode === 'left' && (
+                            <button
+                              type='button'
+                              className='moontv-seek-side-controls moontv-seek-side-controls--forward'
+                              onClick={handleSeekForward}
+                              aria-label={`快进 ${seekSeconds} 秒`}
+                            >
+                              {`↻${seekSeconds}`}
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      {(seekLayoutMode === 'both' || seekLayoutMode === 'right') && (
+                        <>
+                          <button
+                            type='button'
+                            className={`moontv-seek-side-controls ${
+                              seekLayoutMode === 'both'
+                                ? 'moontv-seek-side-controls--forward moontv-seek-side-controls--right'
+                                : 'moontv-seek-side-controls--forward'
+                            }`}
+                            onClick={handleSeekForward}
+                            aria-label={`快进 ${seekSeconds} 秒`}
+                          >
+                            {`↻${seekSeconds}`}
+                          </button>
+                          {seekLayoutMode === 'right' && (
+                            <button
+                              type='button'
+                              className='moontv-seek-side-controls moontv-seek-side-controls--rewind'
+                              onClick={handleSeekRewind}
+                              aria-label={`快退 ${seekSeconds} 秒`}
+                            >
+                              {`↺${seekSeconds}`}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+
                 {/* WebSR 分屏对比分割线 */}
                 {websrEnabled && websrCompareEnabled && (
                   <div
@@ -6235,31 +6891,6 @@ function PlayPageClient() {
                       ↔
                     </div>
                   </div>
-                )}
-
-                {/* 跳过设置按钮 - 播放器内右上角 */}
-                {currentSource && currentId && (
-                  <div className='absolute top-4 right-4 z-10'>
-                    <SkipSettingsButton onClick={() => setIsSkipSettingOpen(true)} />
-                  </div>
-                )}
-
-                {/* SkipController 组件 */}
-                {currentSource && currentId && detail?.title && (
-                  <SkipController
-                    source={currentSource}
-                    id={currentId}
-                    title={detail.title}
-                    doubanId={videoDoubanId}
-                    year={videoYear}
-                    episodeIndex={currentEpisodeIndex}
-                    artPlayerRef={artPlayerRef}
-                    currentTime={currentPlayTime}
-                    duration={videoDuration}
-                    isSettingMode={isSkipSettingOpen}
-                    onSettingModeChange={setIsSkipSettingOpen}
-                    onNextEpisode={handleNextEpisode}
-                  />
                 )}
 
                 {/* 换源加载蒙层 */}
@@ -6587,37 +7218,7 @@ function PlayPageClient() {
         portalContainer
       )}
 
-      {/* 快进快退设置面板 */}
-      {isSeekButtonsSettingsPanelOpen && portalContainer && createPortal(
-        <div style={{ all: 'initial', fontFamily: 'Inter, system-ui, sans-serif', position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9999 }}>
-          <style>{`.seek-iso svg { fill: none !important; }`}</style>
-          <div className="seek-iso" style={{ pointerEvents: 'auto' }}>
-            <SeekButtonsSettingsPanel
-              isOpen={isSeekButtonsSettingsPanelOpen}
-              onClose={() => setIsSeekButtonsSettingsPanelOpen(false)}
-              settings={{
-                seekTime: parseInt(localStorage.getItem('seek_time') || '10', 10),
-                mobileLayout: (localStorage.getItem('seek_layout') || 'both') as 'both' | 'left' | 'right',
-              }}
-              onSettingsChange={(newSettings) => {
-                if (newSettings.seekTime !== undefined) {
-                  localStorage.setItem('seek_time', String(newSettings.seekTime));
-                }
-                if (newSettings.mobileLayout !== undefined) {
-                  localStorage.setItem('seek_layout', newSettings.mobileLayout);
-                }
 
-                // 实时更新插件（像弹幕一样）
-                if (artPlayerRef.current?.plugins?.artplayerPluginSeekButtons) {
-                  artPlayerRef.current.plugins.artplayerPluginSeekButtons.config(newSettings);
-                  artPlayerRef.current.notice.show = '设置已更新';
-                }
-              }}
-            />
-          </div>
-        </div>,
-        portalContainer
-      )}
       </PageLayout>
 
       {/* 网盘资源模态框 */}

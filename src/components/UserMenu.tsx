@@ -25,8 +25,12 @@ import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
+import { navigateWithBrowserPreference } from '@/lib/browser-navigation';
+import {
+  getUserMenuIndicatorColor,
+} from '@/lib/user-menu-indicator';
 import { CURRENT_VERSION } from '@/lib/version';
-import { checkForUpdates, UpdateStatus } from '@/lib/version_check';
+import { UpdateStatus } from '@/lib/version_check';
 import type { PlayRecord, Favorite } from '@/lib/types';
 
 import { useDownload } from '@/contexts/DownloadContext';
@@ -104,6 +108,15 @@ export const UserMenu: React.FC = () => {
       series => series.hasNewRelease && !dismissedReleases.has(`${series.sourceKey}+${series.videoId}`)
     ).length || 0);
 
+  // 🚀 TanStack Query - 版本检查
+  const { data: updateStatus = null, isLoading: isChecking } = useVersionCheckQuery();
+
+  // 🔧 修改点：按优先级区分用户菜单右上角提示点颜色，版本更新优先黄点，仅提醒更新时显示红点
+  const userMenuIndicatorColor = getUserMenuIndicatorColor({
+    hasActualUpdates: Boolean(hasActualUpdates && totalUpdates > 0),
+    updateStatus,
+  });
+
   // 🚀 TanStack Query - 观影室配置
   const { data: showWatchRoom = false } = useWatchRoomConfigQuery();
   // 🚀 TanStack Query - 下载功能配置
@@ -153,9 +166,6 @@ export const UserMenu: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState('');
-
-  // 🚀 TanStack Query - 版本检查
-  const { data: updateStatus = null, isLoading: isChecking } = useVersionCheckQuery();
 
   // 数据查询条件
   const dataQueryEnabled = typeof window !== 'undefined' && !!authInfo?.username && storageType !== 'localstorage';
@@ -223,17 +233,20 @@ export const UserMenu: React.FC = () => {
 
   const handleAdminPanel = () => {
     setIsOpen(false);
-    router.push('/admin');
+    // 修改点：用户菜单常用入口接入统一浏览器直跳策略，覆盖 /admin
+    navigateWithBrowserPreference({ href: '/admin', routerPush: (href) => router.push(href) });
   };
 
   const handlePlayStats = () => {
     setIsOpen(false);
-    router.push('/play-stats');
+    // 修改点：用户菜单常用入口接入统一浏览器直跳策略，覆盖 /play-stats
+    navigateWithBrowserPreference({ href: '/play-stats', routerPush: (href) => router.push(href) });
   };
 
   const handleTVBoxConfig = () => {
     setIsOpen(false);
-    router.push('/tvbox');
+    // 修改点：用户菜单常用入口接入统一浏览器直跳策略，覆盖 /tvbox
+    navigateWithBrowserPreference({ href: '/tvbox', routerPush: (href) => router.push(href) });
   };
 
   const handleWatchRoom = () => {
@@ -243,7 +256,8 @@ export const UserMenu: React.FC = () => {
 
   const handleReleaseCalendar = () => {
     setIsOpen(false);
-    router.push('/release-calendar');
+    // 修改点：用户菜单常用入口接入统一浏览器直跳策略，覆盖 /release-calendar
+    navigateWithBrowserPreference({ href: '/release-calendar', routerPush: (href) => router.push(href) });
   };
 
   const handleWatchingUpdates = () => {
@@ -1189,9 +1203,14 @@ export const UserMenu: React.FC = () => {
 
           <User className='w-full h-full relative z-10 group-hover:scale-110 transition-transform duration-300' />
         </button>
-        {/* 统一更新提醒点：版本更新或剧集更新都显示橙色点 */}
-        {((updateStatus === UpdateStatus.HAS_UPDATE) || (hasActualUpdates && totalUpdates > 0)) && (
-          <div className='absolute top-[2px] right-[2px] w-2 h-2 bg-yellow-500 rounded-full animate-pulse shadow-lg shadow-yellow-500/50'></div>
+        {/* 🔧 修改点：版本更新优先显示黄点，仅有更新提醒时显示红点 */}
+        {userMenuIndicatorColor && (
+          <div
+            className={`absolute top-[2px] right-[2px] w-2 h-2 rounded-full animate-pulse shadow-lg ${userMenuIndicatorColor === 'yellow'
+              ? 'bg-yellow-500 shadow-yellow-500/50'
+              : 'bg-red-500 shadow-red-500/50'
+              }`}
+          ></div>
         )}
       </div>
 

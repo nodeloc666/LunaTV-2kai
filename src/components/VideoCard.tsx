@@ -22,6 +22,7 @@ import { useDeletePlayRecordMutation } from '@/hooks/usePlayRecordsMutations';
 import { useIsFavoritedQuery } from '@/hooks/useFavoritesQuery';
 import { useIsRemindedQuery } from '@/hooks/useRemindersQuery';
 import { isAIRecommendFeatureDisabled } from '@/lib/ai-recommend.client';
+import { navigateWithBrowserPreference } from '@/lib/browser-navigation';
 import {
   deleteFavorite,
   deletePlayRecord,
@@ -121,6 +122,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [searchFavorited, setSearchFavorited] = useState<boolean | null>(null); // 搜索结果的收藏状态
   const [showAIChat, setShowAIChat] = useState(false); // AI问片弹窗
+  const [isNavigating, setIsNavigating] = useState(false); // 导航加载状态
 
   // AI功能状态：优先使用父组件传递的值，否则自己检测
   const [aiEnabledLocal, setAiEnabledLocal] = useState(false);
@@ -186,6 +188,16 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
       : type,
     [isAggregate, actualEpisodes, type]
   );
+  // 修改点：搜索聚合卡片没有 douban_id 时，用标题年份生成稳定收藏标识，避免部分搜索结果无法收藏
+  const searchAggregateFavoriteId = useMemo(() => {
+    if (!(from === 'search' && isAggregate)) return '';
+    const titlePart = actualTitle.trim();
+    if (!titlePart) return '';
+    return [titlePart, actualYear || '', actualSearchType || ''].join('|');
+  }, [from, isAggregate, actualTitle, actualYear, actualSearchType]);
+  // 修改点：搜索聚合卡片优先复用 douban_id 收藏；缺失时退回标题年份标识，保证所有搜索聚合结果都有收藏入口
+  const favoriteSource = actualSource || (from === 'search' && isAggregate ? (actualDoubanId ? 'douban' : 'search_aggregate') : '');
+  const favoriteId = actualId || (from === 'search' && isAggregate ? (actualDoubanId ? actualDoubanId.toString() : searchAggregateFavoriteId) : '');
 
   // 判断是否为即将上映（未发布的内容）- 只有真正未上映的才算
   const isUpcoming = useMemo(() =>
@@ -211,14 +223,14 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
 
   // 🚀 TanStack Query - 获取收藏/提醒状态
   const { data: favoritedStatus } = useIsFavoritedQuery(
-    actualSource || '',
-    actualId || '',
-    { enabled: !!actualSource && !!actualId && !shouldShowBell }
+    favoriteSource || '',
+    favoriteId || '',
+    { enabled: !!favoriteSource && !!favoriteId && !shouldShowBell }
   );
   const { data: remindedStatus } = useIsRemindedQuery(
-    actualSource || '',
-    actualId || '',
-    { enabled: !!actualSource && !!actualId && shouldShowBell }
+    favoriteSource || '',
+    favoriteId || '',
+    { enabled: !!favoriteSource && !!favoriteId && shouldShowBell }
   );
 
   // 同步 Query 结果到本地 state
@@ -240,9 +252,9 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
 
   // 监听状态更新事件
   useEffect(() => {
-    if (!actualSource || !actualId) return;
+    if (!favoriteSource || !favoriteId) return;
 
-    const storageKey = generateStorageKey(actualSource, actualId);
+    const storageKey = generateStorageKey(favoriteSource, favoriteId);
 
     const unsubscribeFavorites = subscribeToDataUpdates(
       'favoritesUpdated',
@@ -268,7 +280,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
       unsubscribeFavorites();
       unsubscribeReminders();
     };
-  }, [from, actualSource, actualId, isUpcoming, remarks]);
+  }, [from, favoriteSource, favoriteId, isUpcoming, remarks]);
 
   // 检查AI功能是否启用 - 只在没有父组件传递时才执行
   useEffect(() => {
@@ -289,7 +301,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
       e.stopPropagation();
 
       // 所有豆瓣内容都允许收藏/提醒
-      if (!actualSource || !actualId) return;
+      if (!favoriteSource || !favoriteId) return;
 
       // 🔥 修复：检查是否是"新上映"的内容
       const isNewRelease = remarks && (remarks.includes('已上映') || remarks.includes('今日上映'));
@@ -306,8 +318,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
         // 🔄 使用 reminder mutation
         toggleReminderMutation.mutate(
           {
-            source: actualSource,
-            id: actualId,
+            source: favoriteSource,
+            id: favoriteId,
             isReminded: currentReminded || false,
             reminder: {
               title: actualTitle,
@@ -347,8 +359,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
         // 🔄 使用 favorite mutation
         toggleFavoriteMutation.mutate(
           {
-            source: actualSource,
-            id: actualId,
+            source: favoriteSource,
+            id: favoriteId,
             isFavorited: currentFavorited || false,
             favorite: {
               title: actualTitle,
@@ -386,8 +398,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
     [
       from,
       isUpcoming,
-      actualSource,
-      actualId,
+      favoriteSource,
+      favoriteId,
       actualTitle,
       source_name,
       actualYear,
@@ -429,7 +441,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
     [from, actualSource, actualId, onDelete, deletePlayRecordMutation]
   );
 
-  // 🚀 数据预取 - 在 hover 时预取收藏数据
+  // 🚀 数据预取 - 在 hover 时预取收藏数据和预加载路由
   const handlePrefetch = useCallback(() => {
     if (!actualSource || !actualId) return;
 
@@ -443,7 +455,24 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
       },
       staleTime: 10 * 1000, // 10秒内不重复预取
     });
-  }, [actualSource, actualId, queryClient]);
+
+    // 🔥 预加载播放页面路由 - 关键优化！
+    const doubanIdParam = actualDoubanId && actualDoubanId > 0 ? `&douban_id=${actualDoubanId}` : '';
+
+    if (origin === 'live' && actualSource && actualId) {
+      const url = `/live?source=${actualSource.replace('live_', '')}&id=${actualId.replace('live_', '')}`;
+      router.prefetch(url);
+    } else if (actualSource === 'shortdrama' && actualId) {
+      const url = `/play?title=${encodeURIComponent(actualTitle.trim())}&shortdrama_id=${actualId}`;
+      router.prefetch(url);
+    } else if (from === 'douban' || (isAggregate && !actualSource && !actualId) || actualSource === 'upcoming_release' || actualSource === 'douban' || actualSource === 'bangumi') {
+      const url = `/play?title=${encodeURIComponent(actualTitle.trim())}${actualYear ? `&year=${actualYear}` : ''}${doubanIdParam}${actualSearchType ? `&stype=${actualSearchType}` : ''}${isAggregate ? '&prefer=true' : ''}${actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''}`;
+      router.prefetch(url);
+    } else if (actualSource && actualId) {
+      const url = `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(actualTitle)}${actualYear ? `&year=${actualYear}` : ''}${doubanIdParam}${isAggregate ? '&prefer=true' : ''}${actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''}${actualSearchType ? `&stype=${actualSearchType}` : ''}`;
+      router.prefetch(url);
+    }
+  }, [actualSource, actualId, queryClient, router, origin, actualTitle, actualYear, actualDoubanId, actualSearchType, isAggregate, actualQuery, from]);
 
   const handleClick = useCallback(() => {
     // 如果是即将上映的内容，不执行跳转，显示提示
@@ -451,29 +480,33 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
       return;
     }
 
+    // 🔥 立即显示加载状态，提供即时反馈
+    setIsNavigating(true);
+
     // 构建豆瓣ID参数
     const doubanIdParam = actualDoubanId && actualDoubanId > 0 ? `&douban_id=${actualDoubanId}` : '';
 
     if (origin === 'live' && actualSource && actualId) {
       // 直播内容跳转到直播页面
       const url = `/live?source=${actualSource.replace('live_', '')}&id=${actualId.replace('live_', '')}`;
-      router.push(url);
+      // 修改点：视频卡片主点击接入统一浏览器直跳策略，尽量覆盖全站进入 /play / /live 的常用入口
+      navigateWithBrowserPreference({ href: url, routerPush: (href) => router.push(href) });
     } else if (actualSource === 'shortdrama' && actualId) {
       // 短剧内容 - 使用shortdrama_id参数
       const url = `/play?title=${encodeURIComponent(actualTitle.trim())}&shortdrama_id=${actualId}`;
-      router.push(url);
+      navigateWithBrowserPreference({ href: url, routerPush: (href) => router.push(href) });
     } else if (from === 'douban' || (isAggregate && !actualSource && !actualId) || actualSource === 'upcoming_release' || actualSource === 'douban' || actualSource === 'bangumi') {
       // 豆瓣内容 或 聚合搜索 或 即将上映 或 Bangumi番剧 - 只用标题和年份搜索
       const url = `/play?title=${encodeURIComponent(actualTitle.trim())}${actualYear ? `&year=${actualYear}` : ''
         }${doubanIdParam}${actualSearchType ? `&stype=${actualSearchType}` : ''}${isAggregate ? '&prefer=true' : ''}${actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''}`;
-      router.push(url);
+      navigateWithBrowserPreference({ href: url, routerPush: (href) => router.push(href) });
     } else if (actualSource && actualId) {
       const url = `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(
         actualTitle
       )}${actualYear ? `&year=${actualYear}` : ''}${doubanIdParam}${isAggregate ? '&prefer=true' : ''
         }${actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''
         }${actualSearchType ? `&stype=${actualSearchType}` : ''}`;
-      router.push(url);
+      navigateWithBrowserPreference({ href: url, routerPush: (href) => router.push(href) });
     }
   }, [
     isUpcoming,
@@ -636,10 +669,12 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
     return configs[from] || configs.search;
   }, [from, isAggregate, douban_id, rate, isUpcoming]);
 
+  const canShowFavoriteAction = config.showHeart && !!favoriteSource && !!favoriteId;
+
   // 🎯 智能判断是否有右下角按钮（垃圾桶/收藏，用于AI按钮水平位置调整）
   const hasRightBottomButtons = useMemo(() => {
-    return (config.showHeart || config.showCheckCircle) && from !== 'favorite';
-  }, [config.showHeart, config.showCheckCircle, from]);
+    return (canShowFavoriteAction || config.showCheckCircle) && from !== 'favorite';
+  }, [canShowFavoriteAction, config.showCheckCircle, from]);
 
   // 移动端操作菜单配置
   const mobileActions = useMemo(() => {
@@ -680,7 +715,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
     // 聚合源信息 - 直接在菜单中展示，不需要单独的操作项
 
     // 收藏/取消收藏操作（或提醒操作）
-    if (config.showHeart && actualSource && actualId) {
+    // 修改点：菜单收藏入口复用统一收藏判断，让搜索聚合卡片与主页卡片交互保持一致
+    if (canShowFavoriteAction) {
       // 🔥 修复：检查是否是"新上映"的内容
       const isNewRelease = remarks && (remarks.includes('已上映') || remarks.includes('今日上映'));
       const shouldShowBell = isUpcoming || isNewRelease;
@@ -831,8 +867,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
   }, [
     config,
     from,
-    actualSource,
-    actualId,
+    canShowFavoriteAction,
     optimisticFavorited,
     optimisticSearchFavorited,
     actualDoubanId,
@@ -981,11 +1016,13 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
             }}
           />
 
-          {/* 播放按钮 / 即将上映提示 */}
+          {/* 播放按钮 / 即将上映提示 / 加载状态 */}
           {config.showPlayButton && (
             <div
               data-button="true"
-              className='absolute inset-0 flex items-center justify-center opacity-0 transition-all duration-300 ease-in-out delay-75 group-hover:opacity-100 group-hover:scale-100'
+              className={`absolute inset-0 flex items-center justify-center transition-all duration-300 ease-in-out ${
+                isNavigating ? 'opacity-100 scale-100' : 'opacity-0 delay-75 group-hover:opacity-100 group-hover:scale-100'
+              }`}
               style={{
                 WebkitUserSelect: 'none',
                 userSelect: 'none',
@@ -996,7 +1033,13 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
                 return false;
               }}
             >
-              {isUpcoming ? (
+              {isNavigating ? (
+                // 🔥 加载状态 - 提供即时反馈
+                <div className='flex flex-col items-center gap-2 bg-black/60 backdrop-blur-md px-6 py-4 rounded-xl'>
+                  <div className='w-10 h-10 border-4 border-green-500/30 border-t-green-500 rounded-full animate-spin' />
+                  <span className='text-white font-bold text-sm whitespace-nowrap'>加载中...</span>
+                </div>
+              ) : isUpcoming ? (
                 // 即将上映 - 显示敬请期待
                 <div className='flex flex-col items-center gap-2 bg-black/60 backdrop-blur-md px-6 py-4 rounded-xl'>
                   <span className='text-3xl'>📅</span>
@@ -1023,7 +1066,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
           )}
 
           {/* 操作按钮 - hover显示（非收藏页面） */}
-          {(config.showHeart || config.showCheckCircle) && from !== 'favorite' && (
+          {(canShowFavoriteAction || config.showCheckCircle) && from !== 'favorite' && (
             <div
               data-button="true"
               className='absolute bottom-3 right-3 flex gap-3 opacity-0 translate-y-2 transition-all duration-300 ease-in-out sm:group-hover:opacity-100 sm:group-hover:translate-y-0'
@@ -1053,7 +1096,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
                   }}
                 />
               )}
-              {config.showHeart && (
+              {canShowFavoriteAction && (
                 <>
                   {(() => {
                     // 🔥 修复：如果是"新上映"的内容（remarks包含"已上映"或"今日上映"），显示Bell图标
@@ -1122,7 +1165,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
           )}
 
           {/* 收藏页面专用：固定显示的爱心/铃铛按钮 */}
-          {from === 'favorite' && config.showHeart && (
+          {from === 'favorite' && canShowFavoriteAction && (
             <div
               className='absolute bottom-2 right-2 z-30'
               onClick={handleToggleFavorite}
@@ -1338,7 +1381,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
 
             return (
               <div
-                className='absolute bottom-2 right-2 opacity-0 transition-all duration-300 ease-in-out delay-75 sm:group-hover:opacity-100'
+                // 修改点：搜索聚合卡片的源数量放到左下角，避免与右下角收藏按钮重叠
+                className={`${from === 'search' ? 'left-2' : 'right-2'} absolute bottom-2 opacity-0 transition-all duration-300 ease-in-out delay-75 sm:group-hover:opacity-100`}
                 style={{
                   WebkitUserSelect: 'none',
                   userSelect: 'none',
@@ -1396,7 +1440,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
 
                     return (
                       <div
-                        className='absolute bottom-full mb-2 opacity-0 invisible group-hover/sources:opacity-100 group-hover/sources:visible transition-all duration-200 ease-out delay-100 pointer-events-none z-40 right-0 sm:right-0 -translate-x-0 sm:translate-x-0'
+                        // 修改点：搜索页源角标在左下角时，悬浮源列表改为从左侧向右展开，避免内容被卡片左边缘截断且不遮挡右下角收藏按钮
+                        className={`absolute bottom-full mb-2 opacity-0 invisible group-hover/sources:opacity-100 group-hover/sources:visible transition-all duration-200 ease-out delay-100 pointer-events-none z-40 ${from === 'search' ? 'left-0' : 'right-0'} -translate-x-0 sm:translate-x-0`}
                         style={{
                           WebkitUserSelect: 'none',
                           userSelect: 'none',
@@ -1441,7 +1486,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(function VideoCard
                           )}
 
                           {/* 小箭头 */}
-                          <div className='absolute top-full right-2 sm:right-3 w-0 h-0 border-l-[4px] border-r-[4px] border-t-[4px] sm:border-l-[6px] sm:border-r-[6px] sm:border-t-[6px] border-transparent border-t-gray-800/90'></div>
+                          <div className={`absolute top-full ${from === 'search' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'} w-0 h-0 border-l-[4px] border-r-[4px] border-t-[4px] sm:border-l-[6px] sm:border-r-[6px] sm:border-t-[6px] border-transparent border-t-gray-800/90`}></div>
                         </div>
                       </div>
                     );

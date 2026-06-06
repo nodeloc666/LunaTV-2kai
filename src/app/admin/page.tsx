@@ -390,6 +390,8 @@ interface SiteConfig {
   ShowAdultContent: boolean;
   FluidSearch: boolean;
   EnableWebLive: boolean;
+  PreferBrowserNavigation: boolean;
+  DefaultLockedLongPressRate: number;
   EnablePuppeteer: boolean; // 豆瓣 Puppeteer 开关
   DoubanCookies?: string; // 豆瓣认证 Cookies
   // TMDB配置
@@ -399,6 +401,9 @@ interface SiteConfig {
   // Bangumi API 代理
   BangumiApiType?: string;
   BangumiApiProxy?: string;
+  // Bangumi 图片代理
+  BangumiImageProxyType?: string;
+  BangumiImageProxy?: string;
 }
 
 // Cron 配置类型
@@ -444,6 +449,17 @@ interface CustomCategory {
   disabled?: boolean;
   from: 'config' | 'custom';
 }
+
+type NavMenuKey = 'source-browser' | 'movie' | 'tv' | 'shortdrama' | 'anime' | 'show';
+
+const NAV_MENU_OPTIONS: Array<{ key: NavMenuKey; label: string; description: string }> = [
+  { key: 'source-browser', label: '源浏览器', description: '控制顶部菜单中的源浏览器入口' },
+  { key: 'movie', label: '电影', description: '控制豆瓣电影分类入口' },
+  { key: 'tv', label: '剧集', description: '控制豆瓣剧集分类入口' },
+  { key: 'shortdrama', label: '短剧', description: '控制短剧页面入口' },
+  { key: 'anime', label: '动漫', description: '控制豆瓣动漫分类入口' },
+  { key: 'show', label: '综艺', description: '控制豆瓣综艺分类入口' },
+];
 
 // 可折叠标签组件
 interface CollapsibleTabProps {
@@ -4828,6 +4844,22 @@ const CategoryConfig = ({
     });
   };
 
+  const handleToggleNavMenuVisibility = (key: NavMenuKey) => {
+    const hiddenItems = config?.SiteConfig.NavMenuHiddenItems ?? [];
+    const visible = !hiddenItems.includes(key);
+
+    // 修改点：新增顶部固定菜单显隐控制，关闭后不影响自定义分类启用/禁用逻辑
+    withLoading(`toggleNavMenu_${key}`, () =>
+      callCategoryApi({
+        action: 'setNavMenuVisibility',
+        key,
+        visible: !visible,
+      })
+    ).catch(() => {
+      console.error('操作失败', 'setNavMenuVisibility', key);
+    });
+  };
+
   const handleDelete = (query: string, type: 'movie' | 'tv') => {
     withLoading(`deleteCategory_${query}_${type}`, () => callCategoryApi({ action: 'delete', query, type })).catch(() => {
       console.error('操作失败', 'delete', query, type);
@@ -4972,6 +5004,52 @@ const CategoryConfig = ({
 
   return (
     <div className='space-y-6'>
+      {/* 修改点：新增顶部固定菜单显示控制，关闭后仅隐藏导航入口，不影响页面直接访问 */}
+      <div className='p-4 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 space-y-4'>
+        <div>
+          <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+            顶部菜单显示控制
+          </h4>
+          <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+            关闭后不会在桌面顶部导航和移动端菜单中显示，不影响对应页面直接访问。
+          </p>
+        </div>
+        <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3'>
+          {NAV_MENU_OPTIONS.map((item) => {
+            const hiddenItems = config.SiteConfig.NavMenuHiddenItems ?? [];
+            const visible = !hiddenItems.includes(item.key);
+            const loadingKey = `toggleNavMenu_${item.key}`;
+
+            return (
+              <div
+                key={item.key}
+                className='flex items-center justify-between gap-3 p-3 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
+              >
+                <div className='min-w-0'>
+                  <div className='text-sm font-medium text-gray-900 dark:text-gray-100'>
+                    {item.label}
+                  </div>
+                  <div className='text-xs text-gray-500 dark:text-gray-400 truncate'>
+                    {item.description}
+                  </div>
+                </div>
+                <button
+                  type='button'
+                  onClick={() => handleToggleNavMenuVisibility(item.key)}
+                  disabled={isLoading(loadingKey)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${visible ? buttonStyles.toggleOn : buttonStyles.toggleOff} ${isLoading(loadingKey) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  aria-label={`${visible ? '隐藏' : '显示'}${item.label}菜单`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full ${buttonStyles.toggleThumb} transition-transform ${visible ? buttonStyles.toggleThumbOn : buttonStyles.toggleThumbOff}`}
+                  />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* 添加分类表单 */}
       <div className='flex items-center justify-between'>
         <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
@@ -5362,12 +5440,18 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
     DoubanImageProxy: '',
     BangumiApiType: 'server',
     BangumiApiProxy: '',
+    BangumiImageProxyType: 'server',
+    BangumiImageProxy: '',
     EnablePuppeteer: false, // 默认关闭 Puppeteer
     DoubanCookies: '', // 默认无 Cookies
     DisableYellowFilter: false,
     ShowAdultContent: false,
     FluidSearch: true,
     EnableWebLive: false,
+    // 修改点：新增后台站点级浏览器原生跳转默认值，供前台本地设置默认继承
+    PreferBrowserNavigation: false,
+    // 修改点：新增后台站点级长按倍速默认值，供前台本地设置默认继承
+    DefaultLockedLongPressRate: 2,
     // TMDB配置默认值
     TMDBApiKey: '',
     TMDBLanguage: 'zh-CN',
@@ -5382,6 +5466,7 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
   const [isDoubanImageProxyDropdownOpen, setIsDoubanImageProxyDropdownOpen] =
     useState(false);
   const [isBangumiApiDropdownOpen, setIsBangumiApiDropdownOpen] = useState(false);
+  const [isBangumiImageProxyDropdownOpen, setIsBangumiImageProxyDropdownOpen] = useState(false);
 
   // 豆瓣数据源选项
   const doubanDataSourceOptions = [
@@ -5401,6 +5486,14 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
     { value: 'server', label: '服务端转发（默认，访问官方 api.bgm.tv）' },
     { value: 'cmliussss', label: 'Bangumi 反代 By CMLiussss（解决服务器被墙）' },
     { value: 'custom', label: '自定义反代地址' },
+  ];
+
+  // Bangumi 图片代理选项
+  const bangumiImageProxyTypeOptions = [
+    { value: 'server', label: '服务器代理（默认，由服务器代理请求）' },
+    { value: 'cmliussss', label: 'Bangumi 图片 CDN By CMLiussss' },
+    { value: 'direct', label: '直连（浏览器直接请求 lain.bgm.tv）' },
+    { value: 'custom', label: '自定义代理' },
   ];
 
   // 豆瓣图片代理选项
@@ -5448,12 +5541,20 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
         DoubanImageProxy: config.SiteConfig.DoubanImageProxy || '',
         BangumiApiType: config.SiteConfig.BangumiApiType || 'server',
         BangumiApiProxy: config.SiteConfig.BangumiApiProxy || '',
+        BangumiImageProxyType: config.SiteConfig.BangumiImageProxyType || 'server',
+        BangumiImageProxy: config.SiteConfig.BangumiImageProxy || '',
         EnablePuppeteer: config.DoubanConfig?.enablePuppeteer || false,
         DoubanCookies: config.DoubanConfig?.cookies || '',
         DisableYellowFilter: config.SiteConfig.DisableYellowFilter || false,
         ShowAdultContent: config.SiteConfig.ShowAdultContent || false,
         FluidSearch: config.SiteConfig.FluidSearch || true,
         EnableWebLive: config.SiteConfig.EnableWebLive ?? false,
+        // 修改点：布尔回填使用 ??，确保后台显式保存 false 时不会被错误吞掉
+        PreferBrowserNavigation:
+          config.SiteConfig.PreferBrowserNavigation ?? false,
+        // 修改点：数值回填使用 ??，确保后台未配置时仍回退到默认长按倍速
+        DefaultLockedLongPressRate:
+          config.SiteConfig.DefaultLockedLongPressRate ?? 2,
         // TMDB配置
         TMDBApiKey: config.SiteConfig.TMDBApiKey || '',
         TMDBLanguage: config.SiteConfig.TMDBLanguage || 'zh-CN',
@@ -5905,6 +6006,79 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
         )}
       </div>
 
+      {/* Bangumi 图片代理设置 */}
+      <div className='space-y-3'>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Bangumi 图片代理
+          </label>
+          <div className='relative' data-dropdown='bangumi-image-proxy'>
+            <button
+              type='button'
+              onClick={() => setIsBangumiImageProxyDropdownOpen(!isBangumiImageProxyDropdownOpen)}
+              className="w-full px-3 py-2.5 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all duration-200 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm hover:border-gray-400 dark:hover:border-gray-500 text-left"
+            >
+              {bangumiImageProxyTypeOptions.find(o => o.value === siteSettings.BangumiImageProxyType)?.label}
+            </button>
+            <div className='absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none'>
+              <ChevronDown className={`w-4 h-4 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isBangumiImageProxyDropdownOpen ? 'rotate-180' : ''}`} />
+            </div>
+            {isBangumiImageProxyDropdownOpen && (
+              <div className='absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg max-h-60 overflow-auto'>
+                {bangumiImageProxyTypeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type='button'
+                    onClick={() => {
+                      setSiteSettings(prev => ({ ...prev, BangumiImageProxyType: option.value }));
+                      setIsBangumiImageProxyDropdownOpen(false);
+                    }}
+                    className={`w-full px-3 py-2.5 text-left text-sm transition-colors duration-150 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 ${siteSettings.BangumiImageProxyType === option.value ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-gray-100'}`}
+                  >
+                    <span className='truncate'>{option.label}</span>
+                    {siteSettings.BangumiImageProxyType === option.value && (
+                      <Check className='w-4 h-4 text-green-600 dark:text-green-400 shrink-0 ml-2' />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+            选择获取 Bangumi 封面图片的方式，服务器无法访问 lain.bgm.tv 时可切换
+          </p>
+          {siteSettings.BangumiImageProxyType === 'cmliussss' && (
+            <div className='mt-3'>
+              <button
+                type='button'
+                onClick={() => window.open('https://github.com/cmliu', '_blank')}
+                className='flex items-center justify-center gap-1.5 w-full px-3 text-xs text-gray-500 dark:text-gray-400 cursor-pointer'
+              >
+                <span className='font-medium'>Thanks to @CMLiussss</span>
+                <ExternalLink className='w-3.5 opacity-70' />
+              </button>
+            </div>
+          )}
+        </div>
+        {siteSettings.BangumiImageProxyType === 'custom' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Bangumi 图片代理地址
+            </label>
+            <input
+              type='text'
+              placeholder='例如: https://proxy.example.com/fetch?url='
+              value={siteSettings.BangumiImageProxy || ''}
+              onChange={(e) => setSiteSettings(prev => ({ ...prev, BangumiImageProxy: e.target.value }))}
+              className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-all duration-200 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 shadow-sm hover:border-gray-400 dark:hover:border-gray-500"
+            />
+            <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+              图片 URL 将以编码形式拼接在后面
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* 豆瓣 Cookies 设置 */}
       <div>
         <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
@@ -6110,6 +6284,38 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
         />
       </div>
 
+      {/* 修改点：新增后台站点级长按倍速默认值，供前台未手动设置时默认继承 */}
+      <div>
+        <div>
+          <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>长按倍速默认速度</h4>
+          <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>修改点：样式与前台本地设置保持一致，仅对未手动设置前台“长按倍速”的用户生效。</p>
+        </div>
+        <div className='grid grid-cols-4 sm:grid-cols-7 gap-2 mt-3'>
+          {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((rate) => {
+            const isSelected = siteSettings.DefaultLockedLongPressRate === rate;
+            return (
+              <button
+                key={rate}
+                type='button'
+                onClick={() =>
+                  setSiteSettings((prev) => ({
+                    ...prev,
+                    DefaultLockedLongPressRate: rate,
+                  }))
+                }
+                className={`px-2 py-2 rounded-lg border text-sm font-medium transition-all duration-200 ${
+                  isSelected
+                    ? 'border-green-500 bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300'
+                    : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:bg-gray-800'
+                }`}
+              >
+                {rate}x
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* 启用关键词过滤 */}
       <div>
         <div className='flex items-center justify-between'>
@@ -6241,6 +6447,38 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
         </div>
         <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
           网页直播性能较差，会导致服务器内存泄露，建议谨慎开启。
+        </p>
+      </div>
+
+      {/* 修改点：后台站点配置新增浏览器原生跳转默认值，供前台本地设置默认继承 */}
+      <div>
+        <div className='flex items-center justify-between'>
+          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+            默认优先使用浏览器原生跳转
+          </label>
+          <button
+            type='button'
+            onClick={() =>
+              setSiteSettings((prev) => ({
+                ...prev,
+                PreferBrowserNavigation: !prev.PreferBrowserNavigation,
+              }))
+            }
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 ${siteSettings.PreferBrowserNavigation
+              ? buttonStyles.toggleOn
+              : buttonStyles.toggleOff
+              }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full ${buttonStyles.toggleThumb} transition-transform ${siteSettings.PreferBrowserNavigation
+                ? buttonStyles.toggleThumbOn
+                : buttonStyles.toggleThumbOff
+                }`}
+            />
+          </button>
+        </div>
+        <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+          修改点：开启后，未手动修改本地设置的用户，会默认优先使用 window.location.assign 进行常用站内整页跳转。
         </p>
       </div>
 

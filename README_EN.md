@@ -153,7 +153,6 @@ pnpm dev
 ### Advanced Configuration
 - 🔧 [Proxy Config](docs/advanced/PROXY_CONFIG.md)
 - 🚫 [Ad Filter](docs/advanced/CUSTOM_AD_FILTER.md)
-- ⏭️ [Skip Controller](docs/advanced/SKIP_CONTROLLER_GUIDE.md)
 
 ## 🔧 Tech Stack
 
@@ -193,7 +192,8 @@ Based on [MoonTV](https://github.com/MoonTechLab/LunaTV).
 
 ### Original Projects
 - [MoonTV](https://github.com/MoonTechLab/LunaTV) — Original project
-- [Selene](https://github.com/MoonTechLab/Selene) — Official mobile APP
+- [Selene](https://github.com/MoonTechLab/Selene) — Official mobile APP (iOS / Android phones)
+- [Selene-TV](https://github.com/MoonTechLab/Selene-TV) — Official Android TV client, optimized for remote control devices
 - [LibreTV](https://github.com/LibreSpark/LibreTV) — Inspiration source
 
 ### Core Dependencies
